@@ -139,13 +139,13 @@ class BDCGAN_Semi(object):
 
 
         for k, v in self.gen_output_dims.items():
-            print "%s: %s" % (k, v)
-        print '****'
+            print("%s: %s" % (k, v))
+        print('****')
         for k, v in self.gen_weight_dims.items():
-            print "%s: %s" % (k, v)
-        print '****'
+            print("%s: %s" % (k, v))
+        print('****')
         for k, v in self.disc_weight_dims.items():
-            print "%s: %s" % (k, v)
+            print("%s: %s" % (k, v))
 
 
 
@@ -220,10 +220,11 @@ class BDCGAN_Semi(object):
 
         param_list = []
         with tf.variable_scope(scope_str) as scope:
-            for zi in xrange(numz):
-                for m in xrange(self.num_mcmc):
+            for zi in range(numz):
+                for m in range(self.num_mcmc):
                     wgts_ = AttributeDict()
-                    for name, shape in weight_dims.iteritems():
+                    for name, shape in weight_dims.items():
+
                         wgts_[name] = tf.get_variable("%s_%04d_%04d" % (name, zi, m),
                                                       shape, initializer=tf.random_normal_initializer(stddev=0.02))
                     param_list.append(wgts_)
@@ -255,8 +256,8 @@ class BDCGAN_Semi(object):
         # compile all disciminative weights
         t_vars = tf.trainable_variables()
         self.d_vars = []
-        for di in xrange(self.num_disc):
-            for m in xrange(self.num_mcmc):
+        for di in range(self.num_disc):
+            for m in range(self.num_mcmc):
                 self.d_vars.append([var for var in t_vars if 'd_' in var.name and "_%04d_%04d" % (di, m) in var.name])
 
         ### build disc losses and optimizers
@@ -295,8 +296,8 @@ class BDCGAN_Semi(object):
         ### build generative losses and optimizers
         self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
         self.g_vars = []
-        for gi in xrange(self.num_gen):
-            for m in xrange(self.num_mcmc):
+        for gi in range(self.num_gen):
+            for m in range(self.num_mcmc):
                 self.g_vars.append([var for var in t_vars if 'g_' in var.name and "_%04d_%04d" % (gi, m) in var.name])
         
         self.g_losses, self.g_optims_semi, self.g_optims_semi_adam = [], [], []
@@ -452,7 +453,7 @@ class BDCGAN_Semi(object):
     def gen_noise(self, gen_params): 
         with tf.variable_scope("generator") as scope:
             noise_loss = 0.0
-            for name, var in gen_params.iteritems():
+            for name, var in gen_params.items():
                 noise_ = tf.contrib.distributions.Normal(mu=0., sigma=self.noise_std*tf.ones(var.get_shape()))
                 noise_loss += tf.reduce_sum(var * noise_.sample())
         noise_loss /= self.dataset_size
