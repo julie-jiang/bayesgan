@@ -43,8 +43,7 @@ class batch_norm(object):
                                             scale=False,
                                             center=False,
                                             is_training=train,
-                                            scope=self.name,
-                                            reuse=tf.AUTO_REUSE)
+                                            scope=self.name) # tf.AUTO_REUSE
 
 def huber_loss(labels, predictions, delta=1.0):
     residual = tf.abs(predictions - labels)

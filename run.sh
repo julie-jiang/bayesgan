@@ -20,5 +20,7 @@
 #SBATCH -p gpu 
 #SBATCH -N 2
 #SBATCH -n 2
-#./run_bgan.py --data_path mnistdir --out_dir exp_results/mnistunsup --train_iter 2000 --n_save 100 --save_samples --save_weights
-./run_bgan_semi.py --data_path mnistdir --outdir exp_results/mnistsemi --train_iter 2000 --n_save 100 --save_samples --save_weights
+./run_bgan.py --data_path mnistdir --out_dir exp_results/mnistunsup \
+        --gf_dim 64 --df_dim 64 --num_gen 10 --num_disc 1 --num_mcmc 2 \
+        --train_iter 5000 --n_save 1000 --save_samples --save_weights \
+        --prior_std 10

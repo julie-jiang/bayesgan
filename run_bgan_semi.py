@@ -175,7 +175,7 @@ def b_dcgan(dataset, args):
                                                     min(1.0, (train_iter*batch_size)/float(dataset_size)))
 
         image_batch, _ = dataset.next_batch(batch_size, class_id=None)       
-        labeled_image_batch, labels = supervised_batches.next()
+        labeled_image_batch, labels = next(supervised_batches)
 
         ### compute disc losses
         batch_z = np.random.uniform(-1, 1, [batch_size, z_dim, dcgan.num_gen])

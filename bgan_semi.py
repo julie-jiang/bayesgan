@@ -454,7 +454,7 @@ class BDCGAN_Semi(object):
         with tf.variable_scope("generator") as scope:
             noise_loss = 0.0
             for name, var in gen_params.items():
-                noise_ = tf.contrib.distributions.Normal(mu=0., sigma=self.noise_std*tf.ones(var.get_shape()))
+                noise_ = tf.contrib.distributions.Normal(loc=0., scale=self.noise_std*tf.ones(var.get_shape()))
                 noise_loss += tf.reduce_sum(var * noise_.sample())
         noise_loss /= self.dataset_size
         return noise_loss
@@ -474,7 +474,7 @@ class BDCGAN_Semi(object):
         with tf.variable_scope("discriminator") as scope:
             noise_loss = 0.0
             for var in disc_params.values():
-                noise_ = tf.contrib.distributions.Normal(mu=0., sigma=self.noise_std*tf.ones(var.get_shape()))
+                noise_ = tf.contrib.distributions.Normal(loc=0., scale=self.noise_std*tf.ones(var.get_shape()))
                 noise_loss += tf.reduce_sum(var * noise_.sample())
         noise_loss /= self.dataset_size
         return noise_loss

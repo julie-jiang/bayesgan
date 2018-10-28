@@ -45,7 +45,7 @@ def b_dcgan(dataset, args):
                    J=args.J, J_d=args.J_d, M=args.M,
                    num_layers=args.num_layers,
                    lr=args.lr, optimizer=args.optimizer, gf_dim=args.gf_dim, 
-                   df_dim=args.df_dim,
+                   df_dim=args.df_dim, prior_std=args.prior_std,
                    ml=(args.ml and args.J==1 and args.M==1 and args.J_d==1))
     
     print("Starting session")
@@ -66,11 +66,12 @@ def b_dcgan(dataset, args):
 
         if train_iter == 5000:
             print("Switching to user-specified optimizer")
-            optimizer_dict = {"disc": dcgan.d_optims_adam,
-                              "gen": dcgan.g_optims_adam}
+            optimizer_dict = {"disc": dcgan.d_optims,
+                              "gen": dcgan.g_optims}
 
-        learning_rate = base_learning_rate * np.exp(-lr_decay_rate *
-                                                    min(1.0, (train_iter*batch_size)/float(dataset_size)))
+        learning_rate = base_learning_rate * \
+            np.exp(-lr_decay_rate * \
+                   min(1.0, (train_iter * batch_size) / float(dataset_size)))
 
         image_batch, _ = dataset.next_batch(batch_size, class_id=None)       
 
@@ -94,31 +95,39 @@ def b_dcgan(dataset, args):
         if train_iter > 0 and train_iter % args.n_save == 0:
 
             print("Iter %i" % train_iter)
-            print("Disc losses = %s" % (", ".join(["%.2f" % dl for dl in d_losses])))
-            print("Gen losses = %s" % (", ".join(["%.2f" % gl for gl in g_losses])))
+            print("Disc losses = %s" % 
+                  (", ".join(["%.2f" % dl for dl in d_losses])))
+            print("Gen losses = %s" % 
+                  (", ".join(["%.2f" % gl for gl in g_losses])))
             
             print("saving results and samples")
 
             results = {"disc_losses": list(map(float, d_losses)),
                        "gen_losses": list(map(float, g_losses)),
                        "timestamp": time.time()}
-
-            with open(os.path.join(args.out_dir, 'results_%i.json' % train_iter), 'w') as fp:
+            res_path = os.path.join(args.out_dir, "results_%i.json" % train_iter)
+            with open(res_path, 'w') as fp:
                 json.dump(results, fp)
             
             if args.save_samples:
                 for zi in range(dcgan.num_gen):
                     _imgs, _ps = [], []
                     for _ in range(10):
-                        z_sampler = np.random.uniform(-1, 1, size=(batch_size, z_dim))
-                        sampled_imgs = session.run(dcgan.gen_samplers[zi*dcgan.num_mcmc],
-                                                   feed_dict={dcgan.z_sampler: z_sampler})
+                        z_sampler = np.random.uniform(
+                            -1, 1, size=(batch_size, z_dim))
+                        sampled_imgs = session.run(
+                            dcgan.gen_samplers[zi * dcgan.num_mcmc],
+                            feed_dict={dcgan.z_sampler: z_sampler})
                         _imgs.append(sampled_imgs)
                     sampled_imgs = np.concatenate(_imgs)
-                    print_images(sampled_imgs, "B_DCGAN_%i_%.2f" % (zi, g_losses[zi*dcgan.num_mcmc]),
-                                 train_iter, directory=args.out_dir)
+                    print_images(
+                        sampled_imgs, 
+                        "B_DCGAN_%i_%.2f" % (zi, g_losses[zi * dcgan.num_mcmc]),
+                        train_iter, 
+                        directory=args.out_dir)
 
-                print_images(image_batch, "RAW", train_iter, directory=args.out_dir)
+                print_images(
+                    image_batch, "RAW", train_iter, directory=args.out_dir)
 
             if args.save_weights:
                 var_dict = {}
