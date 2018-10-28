@@ -82,7 +82,7 @@ def b_dcgan(dataset, args):
                                            dcgan.z: batch_z,
                                            dcgan.d_learning_rate: learning_rate})
 
-        d_losses = disc_info[num_disc:num_disc*2]
+        d_losses = disc_info[len(optimizer_dict["disc"]):]
 
         ### compute generative losses
         batch_z = np.random.uniform(-1, 1, [batch_size, z_dim, dcgan.num_gen])
@@ -90,9 +90,9 @@ def b_dcgan(dataset, args):
                                feed_dict={dcgan.z: batch_z,
                                           dcgan.inputs: image_batch,
                                           dcgan.g_learning_rate: learning_rate})
-        g_losses = [g_ for g_ in gen_info if g_ is not None]
+        g_losses = gen_info[len(optimizer_dict["gen"]):]
 
-        if train_iter > 0 and train_iter % args.n_save == 0:
+        if train_iter + 1 == num_train_iter or train_iter  % args.n_save == 0:
 
             print("Iter %i" % train_iter)
             print("Disc losses = %s" % 
@@ -260,10 +260,10 @@ if __name__ == "__main__":
                         type=str,
                         default="sgd",
                         help="optimizer --- 'adam' or 'sgd'")
-
+    
     
     args = parser.parse_args()
-
+    print(args)
     # set seeds
     np.random.seed(args.random_seed)
     tf.set_random_seed(args.random_seed)
