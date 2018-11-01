@@ -56,7 +56,8 @@ def b_dcgan(dataset, args):
     num_train_iter = args.train_iter
 
     optimizer_dict = {"disc": dcgan.d_optims_adam,
-                      "gen": dcgan.g_optims_adam}
+                      "gen": dcgan.g_optims_adam,
+                      "enc": dcgan.e_optims_adam}
 
     base_learning_rate = args.lr # for now we use same learning rate for Ds and Gs
     lr_decay_rate = args.lr_decay
@@ -67,7 +68,8 @@ def b_dcgan(dataset, args):
         if train_iter == 5000:
             print("Switching to user-specified optimizer")
             optimizer_dict = {"disc": dcgan.d_optims,
-                              "gen": dcgan.g_optims}
+                              "gen": dcgan.g_optims,
+                              "enc": dcgan.e_optims}
 
         learning_rate = base_learning_rate * \
             np.exp(-lr_decay_rate * \
@@ -83,6 +85,12 @@ def b_dcgan(dataset, args):
                                            dcgan.d_learning_rate: learning_rate})
 
         d_losses = disc_info[len(optimizer_dict["disc"]):]
+        
+        ### compute encoder losses
+        enc_info = session.run(optimizer_dict["enc"] + dcgan.e_losses,
+                               feed_dict={dcgan.inputs: image_batch,
+                                          dcgan.e_learning_rate: learning_rate})
+        e_losses = enc_info[len(optimizer_dict["enc"]):]
 
         ### compute generative losses
         batch_z = np.random.uniform(-1, 1, [batch_size, z_dim, dcgan.num_gen])
@@ -91,18 +99,29 @@ def b_dcgan(dataset, args):
                                           dcgan.inputs: image_batch,
                                           dcgan.g_learning_rate: learning_rate})
         g_losses = gen_info[len(optimizer_dict["gen"]):]
-
+        # TODO: d losses too small????
+        """ 
+        raw_d_losses, raw_e_losses, raw_g_losses = session.run(
+            [dcgan.raw_d_losses, dcgan.raw_e_losses, dcgan.raw_g_losses],
+            feed_dict={dcgan.z: batch_z, dcgan.inputs: image_batch})
+        """ 
         if train_iter + 1 == num_train_iter or train_iter  % args.n_save == 0:
 
             print("Iter %i" % train_iter)
-            print("Disc losses = %s" % 
-                  (", ".join(["%.2f" % dl for dl in d_losses])))
-            print("Gen losses = %s" % 
-                  (", ".join(["%.2f" % gl for gl in g_losses])))
-            
+            def print_losses(name, losses):
+                print("%s losses = %s" % 
+                      (name, ", ".join(["%.2f" % l for l in losses])))
+            print_losses("Disc", d_losses)
+            print_losses("Enc", e_losses)
+            print_losses("Gen", g_losses)
+            """ print_losses("Raw Disc", raw_d_losses)
+            print_losses("Raw Enc", raw_e_losses)
+            print_losses("Raw Gen", raw_g_losses)
+            """
             print("saving results and samples")
 
             results = {"disc_losses": list(map(float, d_losses)),
+                       "enc_losses": list(map(float, e_losses)),
                        "gen_losses": list(map(float, g_losses)),
                        "timestamp": time.time()}
             res_path = os.path.join(args.out_dir, "results_%i.json" % train_iter)
@@ -125,9 +144,12 @@ def b_dcgan(dataset, args):
                         "B_DCGAN_%i_%.2f" % (zi, g_losses[zi * dcgan.num_mcmc]),
                         train_iter, 
                         directory=args.out_dir)
+                    
 
                 print_images(
                     image_batch, "RAW", train_iter, directory=args.out_dir)
+                
+                
 
             if args.save_weights:
                 var_dict = {}
