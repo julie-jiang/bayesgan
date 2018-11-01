@@ -1,2 +1,4 @@
 exp_results/
 mnistdir
+*.pyc
+__pycache__
