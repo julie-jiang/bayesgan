@@ -30,6 +30,10 @@ def get_session():
 
     return _SESSION
 
+def print_losses(name, losses):
+    print("%s losses = %s" % 
+         (name, ", ".join(["%.2f" % l for l in losses])))
+
 
 def b_dcgan(dataset, args):
 
@@ -105,15 +109,14 @@ def b_dcgan(dataset, args):
             [dcgan.raw_d_losses, dcgan.raw_e_losses, dcgan.raw_g_losses],
             feed_dict={dcgan.z: batch_z, dcgan.inputs: image_batch})
         """ 
-        if train_iter + 1 == num_train_iter or train_iter  % args.n_save == 0:
+        print("Iter %i" % train_iter)
+        print_losses("Disc", d_losses)
+        print_losses("Enc", e_losses)
+        print_losses("Gen", g_losses)
+        
+        if train_iter + 1 == num_train_iter or \
+           (train_iter > 0 and train_iter  % args.n_save == 0):
 
-            print("Iter %i" % train_iter)
-            def print_losses(name, losses):
-                print("%s losses = %s" % 
-                      (name, ", ".join(["%.2f" % l for l in losses])))
-            print_losses("Disc", d_losses)
-            print_losses("Enc", e_losses)
-            print_losses("Gen", g_losses)
             """ print_losses("Raw Disc", raw_d_losses)
             print_losses("Raw Enc", raw_e_losses)
             print_losses("Raw Gen", raw_g_losses)
