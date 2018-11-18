@@ -63,7 +63,9 @@ def print_images(sampled_images, label, index, directory, save_all_samples=False
 
     if not os.path.exists(directory):
         os.makedirs(directory)
-    fig.savefig(os.path.join(directory, "%s_%i.png" % (label, index)), bbox_inches='tight')
+    path = os.path.join(directory, "%s_%i.png" % (label, index))
+    fig.savefig(path, bbox_inches='tight')
+    print("Figure saved to", path)
     plt.close("all")
 
     if "raw" not in label.lower() and save_all_samples:

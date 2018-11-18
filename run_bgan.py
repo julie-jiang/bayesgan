@@ -17,15 +17,15 @@ from tensorflow.contrib import slim
 from bgan_util import AttributeDict
 from bgan_util import print_images, MnistDataset, CelebDataset, Cifar10, SVHN, ImageNet
 from bgan import BDCGAN
+from gan_plot import plot_losses
 
-
-def get_session():
+def get_sess():
     if tf.get_default_session() is None:
-        print("Creating new session")
+        print("Creating new sess")
         tf.reset_default_graph()
         _SESSION = tf.InteractiveSession()
     else:
-        print("Using old session")
+        print("Using old sess")
         _SESSION = tf.get_default_session()
 
     return _SESSION
@@ -34,85 +34,83 @@ def print_losses(name, losses):
     print("%s losses = %s" % 
          (name, ", ".join(["%.2f" % l for l in losses])))
 
+def train_dcgan(dataset, args, dcgan, sess):
 
-def b_dcgan(dataset, args):
-
-    z_dim = args.z_dim
-    x_dim = dataset.x_dim
-    batch_size = args.batch_size
-    dataset_size = dataset.dataset_size
-
-    session = get_session()
-    tf.set_random_seed(args.random_seed)
-    
-    dcgan = BDCGAN(x_dim, z_dim, dataset_size, batch_size=batch_size,
-                   J=args.J, J_d=args.J_d, M=args.M,
-                   num_layers=args.num_layers,
-                   lr=args.lr, optimizer=args.optimizer, gf_dim=args.gf_dim, 
-                   df_dim=args.df_dim, prior_std=args.prior_std,
-                   ml=(args.ml and args.J==1 and args.M==1 and args.J_d==1))
-    
-    print("Starting session")
-    session.run(tf.global_variables_initializer())
+    print("Starting sess")
+    sess.run(tf.global_variables_initializer())
 
     print("Starting training loop")
         
     num_train_iter = args.train_iter
 
-    optimizer_dict = {"disc": dcgan.d_optims_adam,
+    optimizer_dict = {"disc_reals": dcgan.d_optims_adam_reals,
+                      "disc_fakes": dcgan.d_optims_adam_fakes,
                       "gen": dcgan.g_optims_adam,
                       "enc": dcgan.e_optims_adam}
 
     base_learning_rate = args.lr # for now we use same learning rate for Ds and Gs
     lr_decay_rate = args.lr_decay
     num_disc = args.J_d
-    
+    saver = tf.train.Saver() 
+    running_losses = {}
+    for m in ["g", "e", "d_real", "d_fake"]:
+        running_losses["%s_losses" % m] = np.empty(num_train_iter)
     for train_iter in range(num_train_iter):
 
         if train_iter == 5000:
             print("Switching to user-specified optimizer")
-            optimizer_dict = {"disc": dcgan.d_optims,
+            optimizer_dict = {"disc_reals": dcgan.d_optims_reals,
+                              "disc_fakes": dcgan.d_optims_fakes,
                               "gen": dcgan.g_optims,
                               "enc": dcgan.e_optims}
 
         learning_rate = base_learning_rate * \
             np.exp(-lr_decay_rate * \
-                   min(1.0, (train_iter * batch_size) / float(dataset_size)))
+                   min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
 
-        image_batch, _ = dataset.next_batch(batch_size, class_id=None)       
 
+        image_batch, _ = dataset.next_batch(args.batch_size, class_id=None)       
         ### compute disc losses
-        batch_z = np.random.uniform(-1, 1, [batch_size, z_dim, dcgan.num_gen])
-        disc_info = session.run(optimizer_dict["disc"] + dcgan.d_losses, 
-                                feed_dict={dcgan.inputs: image_batch,
-                                           dcgan.z: batch_z,
-                                           dcgan.d_learning_rate: learning_rate})
+        batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
+        disc_real_info = sess.run(optimizer_dict["disc_reals"] + dcgan.d_losses_reals, 
+                                  feed_dict={dcgan.inputs: image_batch,
+                                             dcgan.d_learning_rate: learning_rate})
+        disc_fake_info = sess.run(optimizer_dict["disc_fakes"] + dcgan.d_losses_fakes,
+                                  feed_dict={dcgan.z: batch_z,
+                                             dcgan.d_learning_rate: learning_rate})
 
-        d_losses = disc_info[len(optimizer_dict["disc"]):]
         
+        d_losses_reals = disc_real_info[len(optimizer_dict["disc_reals"]):]
+        d_losses_fakes = disc_fake_info[len(optimizer_dict["disc_fakes"]):]
+
         ### compute encoder losses
-        enc_info = session.run(optimizer_dict["enc"] + dcgan.e_losses,
+        enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
                                feed_dict={dcgan.inputs: image_batch,
                                           dcgan.e_learning_rate: learning_rate})
         e_losses = enc_info[len(optimizer_dict["enc"]):]
 
         ### compute generative losses
-        batch_z = np.random.uniform(-1, 1, [batch_size, z_dim, dcgan.num_gen])
-        gen_info = session.run(optimizer_dict["gen"] + dcgan.g_losses,
+        batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
+        gen_info = sess.run(optimizer_dict["gen"] + dcgan.g_losses,
                                feed_dict={dcgan.z: batch_z,
                                           dcgan.inputs: image_batch,
                                           dcgan.g_learning_rate: learning_rate})
         g_losses = gen_info[len(optimizer_dict["gen"]):]
         # TODO: d losses too small????
         """ 
-        raw_d_losses, raw_e_losses, raw_g_losses = session.run(
+        raw_d_losses, raw_e_losses, raw_g_losses = sess.run(
             [dcgan.raw_d_losses, dcgan.raw_e_losses, dcgan.raw_g_losses],
             feed_dict={dcgan.z: batch_z, dcgan.inputs: image_batch})
         """ 
         print("Iter %i" % train_iter)
-        print_losses("Disc", d_losses)
+        print_losses("Disc reals", d_losses_reals)
+        print_losses("Disc fakes", d_losses_fakes)
         print_losses("Enc", e_losses)
         print_losses("Gen", g_losses)
+        running_losses["g_losses"][train_iter] = np.mean(g_losses)
+        running_losses["e_losses"][train_iter] = np.mean(e_losses)
+        running_losses["d_real_losses"][train_iter] = np.mean(d_losses_reals)
+        running_losses["d_fake_losses"][train_iter] = np.mean(d_losses_fakes)
         
         if train_iter + 1 == num_train_iter or \
            (train_iter > 0 and train_iter  % args.n_save == 0):
@@ -123,7 +121,8 @@ def b_dcgan(dataset, args):
             """
             print("saving results and samples")
 
-            results = {"disc_losses": list(map(float, d_losses)),
+            results = {"disc_losses_reals": list(map(float, d_losses_reals)),
+                       "disc_losses_fakes": list(map(float, d_losses_fakes)),
                        "enc_losses": list(map(float, e_losses)),
                        "gen_losses": list(map(float, g_losses)),
                        "timestamp": time.time()}
@@ -132,40 +131,87 @@ def b_dcgan(dataset, args):
                 json.dump(results, fp)
             
             if args.save_samples:
-                for zi in range(dcgan.num_gen):
-                    _imgs, _ps = [], []
+                for zi, gen_sampler in enumerate(dcgan.gen_samplers):
+                    sampled_imgs = []
                     for _ in range(10):
                         z_sampler = np.random.uniform(
-                            -1, 1, size=(batch_size, z_dim))
-                        sampled_imgs = session.run(
-                            dcgan.gen_samplers[zi * dcgan.num_mcmc],
+                            -1, 1, size=(args.batch_size, args.z_dim))
+                        img = sess.run(
+                            gen_sampler,
                             feed_dict={dcgan.z_sampler: z_sampler})
-                        _imgs.append(sampled_imgs)
-                    sampled_imgs = np.concatenate(_imgs)
+                        sampled_imgs.append(img)
+                    sampled_imgs = np.concatenate(sampled_imgs)
                     print_images(
                         sampled_imgs, 
-                        "B_DCGAN_%i_%.2f" % (zi, g_losses[zi * dcgan.num_mcmc]),
-                        train_iter, 
+                        "B_DCGAN_g%i" % zi,
+                        train_iter + 1, 
                         directory=args.out_dir)
-                    
-
+                
+                for (gi, ei), recon in dcgan.reconstructers.items():
+                    recon_imgs = sess.run(recon, 
+                                         feed_dict={dcgan.inputs: image_batch})
+                    print_images(
+                        recon_imgs,
+                        "B_DCGAN_RECON_g%i_e%i" % (gi, ei),
+                        train_iter + 1,
+                        directory=args.out_dir)    
                 print_images(
-                    image_batch, "RAW", train_iter, directory=args.out_dir)
+                    image_batch, "RAW", train_iter + 1, directory=args.out_dir)
                 
-                
-
             if args.save_weights:
-                var_dict = {}
-                for var in tf.trainable_variables():
-                    var_dict[var.name] = session.run(var.name)
-
-                np.savez_compressed(os.path.join(args.out_dir,
-                                                 "weights_%i.npz" % train_iter),
-                                    **var_dict)
+                save_path = saver.save(
+                    sess, 
+                    os.path.join(args.out_dir, "model.ckpt"),
+                    global_step=train_iter + 1)
+                print("Model saved to %s" % save_path) 
             
+    losses_file = os.path.join(args.out_dir, "running_losses.npz")          
+    np.savez(losses_file, **running_losses)
+    print("Saved running losses to", losses_file)
+    
+    plot_losses(savename=os.path.join(args.out_dir, "losses_plot.png"), 
+                **running_losses)
+    evaluate_latent(sess, dcgan, args, dataset)
+    print("done")
 
-            print("done")
+def evaluate_latent(sess, dcgan, args, dataset):
+    for ei, encoder in enumerate(dcgan.encoders):
+        latent_encodings = np.empty(
+            (dataset.num_classes, args.batch_size, args.z_dim))
+        for c in range(dataset.num_classes):
+            inputs_c, _ = dataset.next_batch(args.batch_size, class_id=c)
+            encodings_c = sess.run(
+                encoder, 
+                feed_dict={dcgan.inputs: inputs_c})
+            latent_encodings[c] = encodings_c
+        savepath = os.path.join(args.out_dir, "latent_encodings_%d.npy" % ei)
+        np.save(savepath, latent_encodings)
+        print("Latent encodings for encoder %d saved to %s" % (ei, savepath))
+    
         
+        
+def b_dcgan(dataset, args):
+
+    sess = get_sess()
+    tf.set_random_seed(args.random_seed)
+    
+    dcgan = BDCGAN(dataset.x_dim, args.z_dim, 
+                   dataset.dataset_size, batch_size=args.batch_size,
+                   J=args.J, J_d=args.J_d, J_e=args.J_e, M=args.M, 
+                   num_layers=args.num_layers,
+                   lr=args.lr, optimizer=args.optimizer, gf_dim=args.gf_dim, 
+                   df_dim=args.df_dim, prior_std=args.prior_std,
+                   ml=(args.ml and args.J==1 and args.M==1 and args.J_d==1))
+    
+    if args.load_from is not None:
+        saver = tf.train.Saver()
+        saver.restore(sess, args.load_from)
+        running_losses = os.path.join(args.out_dir, "running_losses.npz")
+        running_losses = np.load(running_losses)
+        plot_losses(savename=os.path.join(args.out_dir, "losses_plot.png"), **running_losses)
+        evaluate_latent(sess, dcgan, args, dataset)
+    else:
+        train_dcgan(dataset, args, dcgan, sess)
 
 
 if __name__ == "__main__":
@@ -234,12 +280,18 @@ if __name__ == "__main__":
                         default=1,
                         help="number of discrimitor weight samples")
 
+    parser.add_argument('--num_enc',
+                        type=int,
+                        dest="J_e",
+                        default=1,
+                        help="number of encoder samples")
+   
     parser.add_argument('--num_mcmc',
                         type=int,
                         dest="M",
                         default=1,
                         help="number of MCMC NN weight samples per z")
-
+    
     parser.add_argument('--N',
                         type=int,
                         default=128,
@@ -286,18 +338,25 @@ if __name__ == "__main__":
                         default="sgd",
                         help="optimizer --- 'adam' or 'sgd'")
     
+    parser.add_argument('--load_from',
+                        type=str,
+                        default=None)
     
+
     args = parser.parse_args()
     print(args)
     # set seeds
     np.random.seed(args.random_seed)
     tf.set_random_seed(args.random_seed)
-
-    if not os.path.exists(args.out_dir):
-        print("Creating %s" % args.out_dir)
+    
+    if args.load_from:
+        args.out_dir = os.path.dirname(args.load_from)
+    else:
+        if not os.path.exists(args.out_dir):
+            print("Creating %s" % args.out_dir)
+            os.makedirs(args.out_dir)
+        args.out_dir = os.path.join(args.out_dir, "bgan_%s_%i" % (args.dataset, int(time.time())))
         os.makedirs(args.out_dir)
-    args.out_dir = os.path.join(args.out_dir, "bgan_%s_%i" % (args.dataset, int(time.time())))
-    os.makedirs(args.out_dir)
 
     import pprint
     with open(os.path.join(args.out_dir, "hypers.txt"), "w") as hf:

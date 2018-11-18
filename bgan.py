@@ -8,6 +8,7 @@ from bgan_util import AttributeDict
 
 from dcgan_ops import *
 
+DISC, GEN, ENC = "discriminator", "generator", "encoder"
 
 def conv_out_size(size, stride):
     co = int(math.ceil(size / float(stride)))
@@ -88,8 +89,7 @@ class BDCGAN(object):
             num_efs=self.num_efs)
         
         self.build_bgan_graph()
-        
-
+    
     def construct_from_hypers(self, gen_kernel_size=5, gen_strides=[2, 2, 2, 2],
                               disc_kernel_size=5, disc_strides=[2, 2, 2, 2],
                               enc_kernel_size=5, enc_strides=[2, 2, 2, 2],
@@ -213,13 +213,13 @@ class BDCGAN(object):
 
     def initialize_wgts(self, scope_str):
 
-        if scope_str == "generator":
+        if scope_str == GEN:
             weight_dims = self.gen_weight_dims
             numz = self.num_gen
-        elif scope_str == "discriminator":
+        elif scope_str == DISC:
             weight_dims = self.disc_weight_dims
             numz = self.num_disc
-        elif scope_str == "encoder":
+        elif scope_str == ENC:
             weight_dims = self.enc_weight_dims
             numz = self.num_enc
         else:
@@ -251,9 +251,9 @@ class BDCGAN(object):
             tf.float32, [self.batch_size, self.z_dim], name='z_sampler')
         
         # initialize generator weights
-        self.gen_param_list = self.initialize_wgts("generator")
-        self.disc_param_list = self.initialize_wgts("discriminator")
-        self.enc_param_list = self.initialize_wgts("encoder")
+        self.gen_param_list = self.initialize_wgts(GEN)
+        self.disc_param_list = self.initialize_wgts(DISC)
+        self.enc_param_list = self.initialize_wgts(ENC)
 
         ### build discrimitive losses and optimizers
         # prep optimizer args
@@ -269,9 +269,13 @@ class BDCGAN(object):
                      if 'd_h' in var.name and "_%04d_%04d" % (di, m) in var.name])
         self.raw_d_losses, self.raw_e_losses, self.raw_g_losses = [], [], []
         ### build disc losses and optimizers
-        self.d_losses, self.d_optims, self.d_optims_adam = [], [], []
+        self.d_losses_reals, self.d_losses_fakes = [], []
+        self.d_optims_reals, self.d_optims_fakes = [], []
+        self.d_optims_adam_reals, self.d_optims_adam_fakes = [], []
         for di, disc_params in enumerate(self.disc_param_list):
-            d_loss_reals = []
+
+            d_prior_loss = self.prior(disc_params, DISC)
+            d_losses_reals_ = []
             for enc_params in self.enc_param_list:
                 encoded_inputs = self.encoder(self.inputs, enc_params)
                 d_probs, d_logits, _ = self.discriminator(
@@ -283,9 +287,14 @@ class BDCGAN(object):
                     tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits,
                         labels=tf.constant(constant_labels)))
-                d_loss_reals.append(d_loss_real_)
+                if not self.ml:
+                    d_loss_real_ += d_prior_loss + self.noise(disc_params, DISC)
+                d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
 
-            d_loss_fakes = []   
+            d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))    
+            self.d_losses_reals.append(d_loss_reals)
+ 
+            d_losses_fakes_ = []   
             for gi, gen_params in enumerate(self.gen_param_list):
                 z = self.z[:, :, gi % self.num_gen]
                 d_probs_, d_logits_, _ = self.discriminator(
@@ -297,41 +306,42 @@ class BDCGAN(object):
                     tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits_,
                         labels=tf.constant(constant_labels)))
-                d_loss_fakes.append(d_loss_fake_)
+                if not self.ml:
+                    d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
+                d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))        
+            
+            d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))        
+            self.d_losses_fakes.append(d_loss_fakes)
             # TODO???
-            d_losses = []
-            d_prior_loss = self.prior(disc_params, "discriminator")
             """
             for d_loss_ in d_loss_reals:
                 if not self.ml:
-                    d_loss_ += d_prior_loss + self.noise(disc_params, "discriminator")
+                    d_loss_ += d_prior_loss + self.noise(disc_params, DISC)
                 d_losses.append(tf.reshape(d_loss_, [1]))
 
             for d_loss_ in d_loss_fakes:
                 #d_loss_ = d_loss_real_ * float(self.num_gen) + d_loss_fake_ # why???
                 if not self.ml:
                     d_loss_ += d_prior_loss + \
-                               self.noise(disc_params, "discriminator")
+                               self.noise(disc_params, DISC)
                 d_losses.append(tf.reshape(d_loss_, [1]))
             """
-            for d_loss_real in d_loss_reals:
-                for d_loss_fake in d_loss_fakes:
-                    d_loss_ = d_loss_real + d_loss_fake
-                    if not self.ml:
-                        d_loss_ += d_prior_loss + self.noise(disc_params, "discriminator")
-                    d_losses.append(tf.reshape(d_loss_, [1]))
-                    self.raw_d_losses.append(d_loss_)
-            d_loss = tf.reduce_logsumexp(tf.concat(d_losses, 0))
-            self.d_losses.append(d_loss)
             d_opt = self._get_optimizer(self.d_learning_rate)
-            self.d_optims.append(
-                d_opt.minimize(d_loss, var_list=self.d_vars[di]))
             d_opt_adam = tf.train.AdamOptimizer(
                 learning_rate=self.d_learning_rate, beta1=0.5)
-            self.d_optims_adam.append(
-                d_opt_adam.minimize(d_loss, var_list=self.d_vars[di]))
 
-        print("compiled discriminator losses", self.d_losses)
+            self.d_optims_reals.append(
+                d_opt.minimize(d_loss_reals, var_list=self.d_vars[di]))
+            self.d_optims_adam_reals.append(
+                d_opt_adam.minimize(d_loss_reals, var_list=self.d_vars[di]))
+
+            self.d_optims_fakes.append(
+                d_opt.minimize(d_loss_fakes, var_list=self.d_vars[di]))
+            self.d_optims_adam_fakes.append(
+                d_opt_adam.minimize(d_loss_fakes, var_list=self.d_vars[di]))
+
+        print("compiled discriminator losses\nd loss reals %r\nd_loss fakes %r" %
+              (self.d_losses_reals, self.d_losses_fakes))
 
         ### build encoder losses and optimizers
         self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
@@ -345,7 +355,7 @@ class BDCGAN(object):
         for ei, enc_params in enumerate(self.enc_param_list):
             ei_losses = []
             encoded_inputs = self.encoder(self.inputs, enc_params)
-            e_prior_loss = self.prior(enc_params, "encoder")
+            e_prior_loss = self.prior(enc_params, ENC)
             for disc_params in self.disc_param_list:
                 d_probs, d_logits, d_features = self.discriminator(
                     self.inputs, encoded_inputs, self.K, disc_params)
@@ -356,7 +366,7 @@ class BDCGAN(object):
                         logits=d_logits,
                         labels=tf.constant(constant_labels)))
                 if not self.ml:
-                    e_loss_ += e_prior_loss + self.noise(enc_params, "encoder")
+                    e_loss_ += e_prior_loss + self.noise(enc_params, ENC)
                 
                 ei_losses.append(tf.reshape(e_loss_, [1]))
                 self.raw_e_losses.append(e_loss_)
@@ -385,7 +395,7 @@ class BDCGAN(object):
         for gi, gen_params in enumerate(self.gen_param_list):
 
             gi_losses = []
-            g_prior_loss = self.prior(gen_params, "generator")
+            g_prior_loss = self.prior(gen_params, GEN)
             for disc_params in self.disc_param_list:
                 z = self.z[:, :, gi % self.num_gen]
                 d_probs_, d_logits_, d_features_fake = self.discriminator(
@@ -405,7 +415,7 @@ class BDCGAN(object):
                     
                     g_loss_ = g_disc_loss + g_hub_loss
                     if not self.ml:
-                        g_loss_ += g_prior_loss + self.noise(gen_params, "generator")
+                        g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
                     gi_losses.append(tf.reshape(g_loss_, [1]))
                     self.raw_g_losses.append(g_loss_)
                             
@@ -421,14 +431,29 @@ class BDCGAN(object):
         print("compiled generator losses", self.g_losses)      
 
         ### build samplers
+        print("Not setting train to false in samplers/reconstructers/encoders")
+        # TODO: set train to false?
         self.gen_samplers = []
+        for gen_params in self.gen_param_list:
+            self.gen_samplers.append(
+                self.generator(self.z_sampler, gen_params))
+        
+        self.reconstructers = OrderedDict({})
         for gi, gen_params in enumerate(self.gen_param_list):
-            self.gen_samplers.append(self.generator(self.z_sampler, gen_params))
-
+            for ei, enc_params in enumerate(self.enc_param_list):
+                self.reconstructers[(gi, ei)] = self.generator(
+                    self.encoder(self.inputs, enc_params), 
+                    gen_params)
+        
+        self.encoders = []
+        for enc_params in self.enc_param_list:
+            self.encoders.append(
+                self.encoder(self.inputs, enc_params))    
+        
 
     def discriminator(self, image, encoded_image, K, disc_params, train=True):
 
-        with tf.variable_scope("discriminator", reuse=tf.AUTO_REUSE) as scope:
+        with tf.variable_scope(DISC, reuse=tf.AUTO_REUSE) as scope:
 
             h = image
             layer = 0
@@ -470,7 +495,8 @@ class BDCGAN(object):
                 bias=disc_params["d_h_end_lin_b"])) # for feature norm
             
             h_end += h_enc  #TODO
-
+            
+            
             h_out = linear(
                 h_end, 
                 K, 
@@ -480,8 +506,8 @@ class BDCGAN(object):
             
             return tf.nn.softmax(h_out), h_out, [h_end]
     
-    def encoder(self, image, enc_params):
-        with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE) as scope:
+    def encoder(self, image, enc_params, train=True):
+        with tf.variable_scope(ENC, reuse=tf.AUTO_REUSE) as scope:
             h = image
             layer = 0
       
@@ -505,7 +531,8 @@ class BDCGAN(object):
                            d_h=self.enc_strides[layer], 
                            d_w=self.enc_strides[layer],
                            w=enc_params["e_h%i_W" % layer], 
-                           biases=enc_params["e_h%i_b" % layer])))
+                           biases=enc_params["e_h%i_b" % layer]), 
+                    train=train))
         
             h_end = lrelu(linear(
                 tf.reshape(h, [self.batch_size, -1]),
@@ -524,13 +551,13 @@ class BDCGAN(object):
             return h_out
                         
 
-    def generator(self, z, gen_params):
+    def generator(self, z, gen_params, train=True):
 
-        with tf.variable_scope("generator", reuse=tf.AUTO_REUSE) as scope:
+        with tf.variable_scope(GEN, reuse=tf.AUTO_REUSE) as scope:
 
             h = linear(z, self.gen_weight_dims["g_h0_lin_W"][-1], 'g_h0_lin',
                        matrix=gen_params.g_h0_lin_W, bias=gen_params.g_h0_lin_b)
-            h = tf.nn.relu(self.g_batch_norm.g_bn0(h))
+            h = tf.nn.relu(self.g_batch_norm["g_bn0"](h, train=train))
 
             h = tf.reshape(h, [self.batch_size, 
                                self.gen_output_dims["g_h0_out"][0],
@@ -553,12 +580,13 @@ class BDCGAN(object):
                              w=gen_params["g_h%i_W" % layer], 
                              biases=gen_params["g_h%i_b" % layer])
                 if layer < len(self.gen_strides):
-                    h = tf.nn.relu(self.g_batch_norm["g_bn%i" % layer](h))
+                    h = tf.nn.relu(self.g_batch_norm["g_bn%i" % layer](h, train=train))
 
             return tf.nn.tanh(h)        
-
+    
+        
     def prior(self, params, scope_str):
-        assert scope_str in ["discriminator", "generator", "encoder"], \
+        assert scope_str in [DISC, GEN, ENC], \
                "invalid scope!"
         with tf.variable_scope(scope_str) as scope:
             prior_loss = 0.0
@@ -571,7 +599,7 @@ class BDCGAN(object):
         return prior_loss
 
     def noise(self, params, scope_str): 
-        assert scope_str in ["discriminator", "generator", "encoder"], \
+        assert scope_str in [DISC, GEN, ENC], \
                "invalid scope!"
 
         with tf.variable_scope(scope_str) as scope:
