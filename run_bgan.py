@@ -47,14 +47,20 @@ def train_dcgan(dataset, args, dcgan, sess):
                       "disc_fakes": dcgan.d_optims_adam_fakes,
                       "gen": dcgan.g_optims_adam,
                       "enc": dcgan.e_optims_adam}
-
-    base_learning_rate = args.lr # for now we use same learning rate for Ds and Gs
+    
+    
     lr_decay_rate = args.lr_decay
     num_disc = args.J_d
     saver = tf.train.Saver() 
     running_losses = {}
+    
     for m in ["g", "e", "d_real", "d_fake"]:
         running_losses["%s_losses" % m] = np.empty(num_train_iter)
+    base_learning_rates = {
+        "gen_lr": args.gen_lr,
+        "disc_lr": args.disc_lr,
+        "enc_lr": args.enc_lr}
+    learning_rates = {}
     for train_iter in range(num_train_iter):
 
         if train_iter == 5000:
@@ -63,10 +69,10 @@ def train_dcgan(dataset, args, dcgan, sess):
                               "disc_fakes": dcgan.d_optims_fakes,
                               "gen": dcgan.g_optims,
                               "enc": dcgan.e_optims}
-
-        learning_rate = base_learning_rate * \
-            np.exp(-lr_decay_rate * \
-                   min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
+        for m in ["gen", "disc", "enc"]:
+            learning_rates[m] = base_learning_rates["%s_lr" % m] * \
+                np.exp(-lr_decay_rate * \
+                    min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
 
 
         image_batch, _ = dataset.next_batch(args.batch_size, class_id=None)       
@@ -74,10 +80,10 @@ def train_dcgan(dataset, args, dcgan, sess):
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
         disc_real_info = sess.run(optimizer_dict["disc_reals"] + dcgan.d_losses_reals, 
                                   feed_dict={dcgan.inputs: image_batch,
-                                             dcgan.d_learning_rate: learning_rate})
+                                             dcgan.d_learning_rate: learning_rates["disc"]})
         disc_fake_info = sess.run(optimizer_dict["disc_fakes"] + dcgan.d_losses_fakes,
                                   feed_dict={dcgan.z: batch_z,
-                                             dcgan.d_learning_rate: learning_rate})
+                                             dcgan.d_learning_rate: learning_rates["disc"]})
 
         
         d_losses_reals = disc_real_info[len(optimizer_dict["disc_reals"]):]
@@ -86,7 +92,7 @@ def train_dcgan(dataset, args, dcgan, sess):
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
                                feed_dict={dcgan.inputs: image_batch,
-                                          dcgan.e_learning_rate: learning_rate})
+                                          dcgan.e_learning_rate: learning_rates["enc"]})
         e_losses = enc_info[len(optimizer_dict["enc"]):]
 
         ### compute generative losses
@@ -94,7 +100,7 @@ def train_dcgan(dataset, args, dcgan, sess):
         gen_info = sess.run(optimizer_dict["gen"] + dcgan.g_losses,
                                feed_dict={dcgan.z: batch_z,
                                           dcgan.inputs: image_batch,
-                                          dcgan.g_learning_rate: learning_rate})
+                                          dcgan.g_learning_rate: learning_rates["gen"]})
         g_losses = gen_info[len(optimizer_dict["gen"]):]
         # TODO: d losses too small????
         """ 
@@ -144,7 +150,7 @@ def train_dcgan(dataset, args, dcgan, sess):
                     print_images(
                         sampled_imgs, 
                         "B_DCGAN_g%i" % zi,
-                        train_iter + 1, 
+                        train_iter, 
                         directory=args.out_dir)
                 
                 for (gi, ei), recon in dcgan.reconstructers.items():
@@ -153,16 +159,16 @@ def train_dcgan(dataset, args, dcgan, sess):
                     print_images(
                         recon_imgs,
                         "B_DCGAN_RECON_g%i_e%i" % (gi, ei),
-                        train_iter + 1,
+                        train_iter,
                         directory=args.out_dir)    
                 print_images(
-                    image_batch, "RAW", train_iter + 1, directory=args.out_dir)
+                    image_batch, "RAW", train_iter, directory=args.out_dir)
                 
             if args.save_weights:
                 save_path = saver.save(
                     sess, 
                     os.path.join(args.out_dir, "model.ckpt"),
-                    global_step=train_iter + 1)
+                    global_step=train_iter)
                 print("Model saved to %s" % save_path) 
             
     losses_file = os.path.join(args.out_dir, "running_losses.npz")          
@@ -199,9 +205,9 @@ def b_dcgan(dataset, args):
                    dataset.dataset_size, batch_size=args.batch_size,
                    J=args.J, J_d=args.J_d, J_e=args.J_e, M=args.M, 
                    num_layers=args.num_layers,
-                   lr=args.lr, optimizer=args.optimizer, gf_dim=args.gf_dim, 
+                   optimizer=args.optimizer, gf_dim=args.gf_dim, 
                    df_dim=args.df_dim, prior_std=args.prior_std,
-                   ml=(args.ml and args.J==1 and args.M==1 and args.J_d==1))
+                   ml=(args.ml and args.J_e and args.J==1 and args.M==1 and args.J_d==1))
     
     if args.load_from is not None:
         saver = tf.train.Saver()
@@ -323,10 +329,18 @@ if __name__ == "__main__":
                         default=2222,
                         help="random seed")
     
-    parser.add_argument('--lr',
+    parser.add_argument('--gen_lr',
                         type=float,
-                        default=0.005,
+                        default=0.001,
                         help="learning rate")
+
+    parser.add_argument('--disc_lr',
+                        type=float,
+                        default=.005)
+
+    parser.add_argument('--enc_lr',
+                        type=float,
+                        default=.001)
 
     parser.add_argument('--lr_decay',
                         type=float,

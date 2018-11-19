@@ -25,7 +25,7 @@ class BDCGAN(object):
 
     def __init__(self, x_dim, z_dim, dataset_size, batch_size=64, gf_dim=64, df_dim=64, 
                  prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4,
-                 alpha=0.01, lr=0.0002, optimizer='adam', wasserstein=False, 
+                 alpha=0.01, optimizer='adam', wasserstein=False, 
                  ml=False, J_d=1, J_e=1):
 
 
@@ -44,7 +44,6 @@ class BDCGAN(object):
         self.df_dim = df_dim
         self.ef_dim = df_dim # TODO
         self.c_dim = c_dim
-        self.lr = lr
         
         # Bayes
         self.prior_std = prior_std
@@ -164,11 +163,13 @@ class BDCGAN(object):
         self.disc_weight_dims.update(OrderedDict(
             [("d_h_enc_lin_W", (self.z_dim, num_dfs[-1])),
              ("d_h_enc_lin_b", (num_dfs[-1],)),
-             ("d_h_end_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
-             ("d_h_end_lin_b", (num_dfs[-1],)),
+             ("d_h0_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
+             ("d_h0_lin_b", (num_dfs[-1],)),
+             ("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
+             ("d_h1_lin_b", (num_dfs[-1],)),
              ("d_h_out_lin_W", (num_dfs[-1], self.K)),
              ("d_h_out_lin_b", (self.K,))]))
-        
+        print("ADDED ONE MORE DISC LIN LAYER") 
         self.enc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
         num_efs = [self.c_dim] + num_efs
@@ -267,7 +268,6 @@ class BDCGAN(object):
                 self.d_vars.append(
                     [var for var in t_vars \
                      if 'd_h' in var.name and "_%04d_%04d" % (di, m) in var.name])
-        self.raw_d_losses, self.raw_e_losses, self.raw_g_losses = [], [], []
         ### build disc losses and optimizers
         self.d_losses_reals, self.d_losses_fakes = [], []
         self.d_optims_reals, self.d_optims_fakes = [], []
@@ -369,7 +369,6 @@ class BDCGAN(object):
                     e_loss_ += e_prior_loss + self.noise(enc_params, ENC)
                 
                 ei_losses.append(tf.reshape(e_loss_, [1]))
-                self.raw_e_losses.append(e_loss_)
             e_loss = tf.reduce_logsumexp(tf.concat(ei_losses, 0)) 
             self.e_losses.append(e_loss)
             e_opt = self._get_optimizer(self.e_learning_rate)
@@ -405,20 +404,24 @@ class BDCGAN(object):
                 g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits_,
                         labels=tf.constant(constant_labels)))
+                """
+                if not self.ml:
+                    g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
+                gi_losses.append(tf.reshape(g_disc_loss, [1]))
                 # Also why???
+                """
                 for enc_params in self.enc_param_list:
                     encoded_inputs = self.encoder(self.inputs, enc_params)
                     _, _, d_features_real = self.discriminator(
                         self.inputs, encoded_inputs, self.K, disc_params)
                     g_hub_loss = tf.reduce_mean(
-                        huber_loss(d_features_real[-1], d_features_fake[-1]))
+                        huber_loss(d_features_real, d_features_fake))
                     
                     g_loss_ = g_disc_loss + g_hub_loss
                     if not self.ml:
                         g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
                     gi_losses.append(tf.reshape(g_loss_, [1]))
-                    self.raw_g_losses.append(g_loss_)
-                            
+                #"""         
             g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
             self.g_losses.append(g_loss)
             g_opt = self._get_optimizer(self.g_learning_rate)
@@ -480,31 +483,33 @@ class BDCGAN(object):
                            w=disc_params["d_h%i_W" % layer], 
                            biases=disc_params["d_h%i_b" % layer]), 
                     train=train))
+            
             h_enc = lrelu(linear(
                 encoded_image,
                 self.df_dim * 4, # not needed, and not correct anways
                 "d_h_enc_lin",
                 matrix=disc_params["d_h_enc_lin_W"],
                 bias=disc_params["d_h_enc_lin_b"]))
-            
-            h_end = lrelu(linear(
-                tf.reshape(h, [self.batch_size, -1]),
-                self.df_dim * 4, 
-                "d_h_end_lin",
-                matrix=disc_params["d_h_end_lin_W"], 
-                bias=disc_params["d_h_end_lin_b"])) # for feature norm
-            
-            h_end += h_enc  #TODO
-            
-            
+
+            h = tf.reshape(h, [self.batch_size, -1])
+    
+            for layer in range(2): #TODO           
+                h = lrelu(linear(
+                    h,
+                    self.df_dim * 4, 
+                    "d_h%d_lin" % layer,
+                    matrix=disc_params["d_h%d_lin_W" % layer], 
+                    bias=disc_params["d_h%d_lin_b" % layer])) # for feature norm
+                h += h_enc 
+
             h_out = linear(
-                h_end, 
+                h, 
                 K, 
                 'd_h_out_lin',
                 matrix=disc_params["d_h_out_lin_W"], 
                 bias=disc_params["d_h_out_lin_b"])
             
-            return tf.nn.softmax(h_out), h_out, [h_end]
+            return tf.nn.softmax(h_out), h_out, h
     
     def encoder(self, image, enc_params, train=True):
         with tf.variable_scope(ENC, reuse=tf.AUTO_REUSE) as scope:

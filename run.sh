@@ -22,11 +22,12 @@
 #SBATCH -n 2
 
 stdbuf -o0 ./run_bgan.py \
-        --data_path $DATADIR/mnist --out_dir exp_results/mnistunsup \
+        --data_path $DATADIR/mnist --out_dir exp_results \
         --gf_dim 64 --df_dim 64 \
-        --num_gen 2 --num_enc 2 --num_disc 1 --num_mcmc 1 \
-        --train_iter 5000 --n_save 500 --save_samples --save_weights \
-        --prior_std 10 \
+        --disc_lr 0.00001 --gen_lr 0.001 --enc_lr 0.01 \
+        --num_gen 1 --num_enc 1 --num_disc 1 --num_mcmc 1 \
+        --train_iter 10000 --n_save 2000 --save_samples \
+        --prior_std 10 --ml --optimizer sgd
 #        --load_from "exp_results/mnistunsup/bgan_mnist_1542495198/model.ckpt-5000"
 #        --data_path mnistdir --out_dir exp_results/mnistunsup \
 #        --gf_dim 64 --df_dim 64 --num_gen 2 --num_disc 1 --num_mcmc 2 \
