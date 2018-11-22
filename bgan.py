@@ -9,6 +9,7 @@ from bgan_util import AttributeDict
 from dcgan_ops import *
 
 DISC, GEN, ENC = "discriminator", "generator", "encoder"
+FAKE_LABELS, REAL_LABELS = 1, 0
 
 def conv_out_size(size, stride):
     co = int(math.ceil(size / float(stride)))
@@ -165,11 +166,11 @@ class BDCGAN(object):
              ("d_h_enc_lin_b", (num_dfs[-1],)),
              ("d_h0_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
              ("d_h0_lin_b", (num_dfs[-1],)),
-             ("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
-             ("d_h1_lin_b", (num_dfs[-1],)),
+             #("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
+             #("d_h1_lin_b", (num_dfs[-1],)),
              ("d_h_out_lin_W", (num_dfs[-1], self.K)),
              ("d_h_out_lin_b", (self.K,))]))
-        print("ADDED ONE MORE DISC LIN LAYER") 
+        print("ONLY USING ONE DISC LIN LAYER") 
         self.enc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
         num_efs = [self.c_dim] + num_efs
@@ -282,7 +283,7 @@ class BDCGAN(object):
                     self.inputs, encoded_inputs, self.K, disc_params)
 
                 constant_labels = np.zeros((self.batch_size, self.K))
-                constant_labels[:, 1] = 1.0  # real
+                constant_labels[:, REAL_LABELS] = 1.0  # real
                 d_loss_real_ = tf.reduce_mean(
                     tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits,
@@ -301,7 +302,7 @@ class BDCGAN(object):
                     self.generator(z, gen_params), z, self.K, disc_params)
                 constant_labels = np.zeros((self.batch_size, self.K))
                 # class label indicating it came from generator, aka fake
-                constant_labels[:, 0] = 1.0
+                constant_labels[:, FAKE_LABELS] = 1.0
                 d_loss_fake_ = tf.reduce_mean(
                     tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits_,
@@ -360,7 +361,7 @@ class BDCGAN(object):
                 d_probs, d_logits, d_features = self.discriminator(
                     self.inputs, encoded_inputs, self.K, disc_params)
                 constant_labels = np.zeros((self.batch_size, self.K)) 
-                constant_labels[:, 0] = 1.0 # want to make real input appear fake
+                constant_labels[:, FAKE_LABELS] = 1.0 # want to make real input appear fake
                 
                 e_loss_ = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits,
@@ -400,14 +401,14 @@ class BDCGAN(object):
                 d_probs_, d_logits_, d_features_fake = self.discriminator(
                     self.generator(z, gen_params), z, self.K, disc_params)
                 # class label indicating that this fake is real
-                constant_labels[:, 1] = 1.0
+                constant_labels[:, REAL_LABELS] = 1.0
                 g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits_,
                         labels=tf.constant(constant_labels)))
-                """
                 if not self.ml:
                     g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
                 gi_losses.append(tf.reshape(g_disc_loss, [1]))
+                print("NOT using huber loss")
                 # Also why???
                 """
                 for enc_params in self.enc_param_list:
@@ -421,7 +422,7 @@ class BDCGAN(object):
                     if not self.ml:
                         g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
                     gi_losses.append(tf.reshape(g_loss_, [1]))
-                #"""         
+                """         
             g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
             self.g_losses.append(g_loss)
             g_opt = self._get_optimizer(self.g_learning_rate)
@@ -492,8 +493,8 @@ class BDCGAN(object):
                 bias=disc_params["d_h_enc_lin_b"]))
 
             h = tf.reshape(h, [self.batch_size, -1])
-    
-            for layer in range(2): #TODO           
+            
+            for layer in range(1): #TODO           
                 h = lrelu(linear(
                     h,
                     self.df_dim * 4, 

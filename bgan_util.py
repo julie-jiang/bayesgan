@@ -430,7 +430,7 @@ class Cifar10():
 
         def process_batch(fn):
             fo = open(fn, 'rb')
-            data_dict = pickle.load(fo)
+            data_dict = pickle.load(fo, encoding="latin1")
             fo.close()
             raw = data_dict["data"]
             images = _convert_images(raw)
@@ -444,7 +444,7 @@ class Cifar10():
             data_dict = pickle.load(fo)
             fo.close()
             raw = data_dict["label_names"]
-            names = [x.decode('utf-8') for x in raw]
+            names = list(raw) #[x.decode('utf-8') for x in raw]
 
             return names
                 

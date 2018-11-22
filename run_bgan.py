@@ -17,7 +17,7 @@ from tensorflow.contrib import slim
 from bgan_util import AttributeDict
 from bgan_util import print_images, MnistDataset, CelebDataset, Cifar10, SVHN, ImageNet
 from bgan import BDCGAN
-from gan_plot import plot_losses
+from gan_plot import plot_losses, plot_latent_encodings
 
 def get_sess():
     if tf.get_default_session() is None:
@@ -57,9 +57,10 @@ def train_dcgan(dataset, args, dcgan, sess):
     for m in ["g", "e", "d_real", "d_fake"]:
         running_losses["%s_losses" % m] = np.empty(num_train_iter)
     base_learning_rates = {
-        "gen_lr": args.gen_lr,
-        "disc_lr": args.disc_lr,
-        "enc_lr": args.enc_lr}
+        "gen": args.gen_lr,
+        "disc_reals": args.disc_real_lr,
+        "disc_fakes": args.disc_fake_lr,
+        "enc": args.enc_lr}
     learning_rates = {}
     for train_iter in range(num_train_iter):
 
@@ -69,25 +70,31 @@ def train_dcgan(dataset, args, dcgan, sess):
                               "disc_fakes": dcgan.d_optims_fakes,
                               "gen": dcgan.g_optims,
                               "enc": dcgan.e_optims}
-        for m in ["gen", "disc", "enc"]:
-            learning_rates[m] = base_learning_rates["%s_lr" % m] * \
-                np.exp(-lr_decay_rate * \
+        for m, b_lr in base_learning_rates.items():
+            learning_rates[m] = b_lr * np.exp(-lr_decay_rate * \
                     min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
 
 
         image_batch, _ = dataset.next_batch(args.batch_size, class_id=None)       
         ### compute disc losses
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
-        disc_real_info = sess.run(optimizer_dict["disc_reals"] + dcgan.d_losses_reals, 
-                                  feed_dict={dcgan.inputs: image_batch,
-                                             dcgan.d_learning_rate: learning_rates["disc"]})
-        disc_fake_info = sess.run(optimizer_dict["disc_fakes"] + dcgan.d_losses_fakes,
-                                  feed_dict={dcgan.z: batch_z,
-                                             dcgan.d_learning_rate: learning_rates["disc"]})
 
-        
-        d_losses_reals = disc_real_info[len(optimizer_dict["disc_reals"]):]
-        d_losses_fakes = disc_fake_info[len(optimizer_dict["disc_fakes"]):]
+        # TODO this is really ugly
+        d_feed_dict = {dcgan.inputs: image_batch,
+                       dcgan.d_learning_rate: learning_rates["disc_reals"]}
+        d_losses_reals = sess.run(dcgan.d_losses_reals, feed_dict=d_feed_dict)
+
+        for di, d_loss_real in enumerate(d_losses_reals):
+            if d_loss_real > args.d_real_update_threshold:
+                sess.run(optimizer_dict["disc_reals"][di], feed_dict=d_feed_dict)
+
+        d_feed_dict = {dcgan.z: batch_z,
+                       dcgan.d_learning_rate: learning_rates["disc_fakes"]}
+
+        d_losses_fakes = sess.run(dcgan.d_losses_fakes, feed_dict=d_feed_dict)
+        for di, d_loss_fake in enumerate(d_losses_fakes):
+            if d_loss_fake > args.d_fake_update_threshold:
+                sess.run(optimizer_dict["disc_fakes"][di], feed_dict=d_feed_dict)             
 
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
@@ -155,7 +162,7 @@ def train_dcgan(dataset, args, dcgan, sess):
                 
                 for (gi, ei), recon in dcgan.reconstructers.items():
                     recon_imgs = sess.run(recon, 
-                                         feed_dict={dcgan.inputs: image_batch})
+                                          feed_dict={dcgan.inputs: image_batch})
                     print_images(
                         recon_imgs,
                         "B_DCGAN_RECON_g%i_e%i" % (gi, ei),
@@ -170,17 +177,27 @@ def train_dcgan(dataset, args, dcgan, sess):
                     os.path.join(args.out_dir, "model.ckpt"),
                     global_step=train_iter)
                 print("Model saved to %s" % save_path) 
-            
+    
+            if args.evaluate_latent: 
+                all_latent_encodings = evaluate_latent(sess, dcgan, args, dataset)
+                for ei, latent_encodings in enumerate(all_latent_encodings):
+                    for r in range(2):
+                        plot_latent_encodings(
+                            latent_encodings, 
+                            savename=os.path.join(
+                                args.out_dir, 
+                                "latent_encodings_e%d_r%d_%d.png" % (ei, r, train_iter)))
+                    
     losses_file = os.path.join(args.out_dir, "running_losses.npz")          
     np.savez(losses_file, **running_losses)
     print("Saved running losses to", losses_file)
     
     plot_losses(savename=os.path.join(args.out_dir, "losses_plot.png"), 
                 **running_losses)
-    evaluate_latent(sess, dcgan, args, dataset)
     print("done")
 
 def evaluate_latent(sess, dcgan, args, dataset):
+    all_latent_encodings = []
     for ei, encoder in enumerate(dcgan.encoders):
         latent_encodings = np.empty(
             (dataset.num_classes, args.batch_size, args.z_dim))
@@ -193,7 +210,8 @@ def evaluate_latent(sess, dcgan, args, dataset):
         savepath = os.path.join(args.out_dir, "latent_encodings_%d.npy" % ei)
         np.save(savepath, latent_encodings)
         print("Latent encodings for encoder %d saved to %s" % (ei, savepath))
-    
+        all_latent_encodings.append(latent_encodings)
+    return all_latent_encodings 
         
         
 def b_dcgan(dataset, args):
@@ -319,7 +337,10 @@ if __name__ == "__main__":
     parser.add_argument('--save_samples',
                         action="store_true",
                         help="wether to save generated samples")
-    
+
+    parser.add_argument("--evaluate_latent",
+                        action="store_true")
+
     parser.add_argument('--save_weights',
                         action="store_true",
                         help="wether to save weights")
@@ -334,9 +355,14 @@ if __name__ == "__main__":
                         default=0.001,
                         help="learning rate")
 
-    parser.add_argument('--disc_lr',
+    parser.add_argument('--disc_real_lr',
                         type=float,
-                        default=.005)
+                        default=.0001)
+
+    parser.add_argument('--disc_fake_lr',
+                        type=float,
+                        default=.0001)
+
 
     parser.add_argument('--enc_lr',
                         type=float,
@@ -355,8 +381,14 @@ if __name__ == "__main__":
     parser.add_argument('--load_from',
                         type=str,
                         default=None)
-    
 
+    parser.add_argument('--d_fake_update_threshold',
+                        type=float,
+                        default=0.2)
+
+    parser.add_argument('--d_real_update_threshold',
+                        type=float,
+                        default=0.2)
     args = parser.parse_args()
     print(args)
     # set seeds
