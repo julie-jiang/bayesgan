@@ -1,4 +1,3 @@
-import sys
 import numpy as np
 import tensorflow as tf
 
@@ -8,7 +7,6 @@ from bgan_util import AttributeDict
 
 from dcgan_ops import *
 
-DISC, GEN, ENC = "discriminator", "generator", "encoder"
 
 def conv_out_size(size, stride):
     co = int(math.ceil(size / float(stride)))
@@ -21,12 +19,12 @@ def kernel_sizer(size, stride):
     return ko
 
 
-class BDCGAN(object):
+class BDCGAN_Semi(object):
 
     def __init__(self, x_dim, z_dim, dataset_size, batch_size=64, gf_dim=64, df_dim=64, 
-                 prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4, num_classes=1,
-                 alpha=0.01, optimizer='adam', wasserstein=False, 
-                 ml=False, J_d=1, J_e=1):
+                 prior_std=1.0, J=1, M=1, num_classes=1, eta=2e-4, num_layers=4,
+                 alpha=0.01, lr=0.0002, optimizer='adam', wasserstein=False, 
+                 ml=False, J_d=None):
 
 
         assert len(x_dim) == 3, "invalid image dims"
@@ -42,84 +40,62 @@ class BDCGAN(object):
 
         self.gf_dim = gf_dim
         self.df_dim = df_dim
-        self.ef_dim = df_dim # TODO
         self.c_dim = c_dim
+        self.lr = lr
         
         # Bayes
         self.prior_std = prior_std
         self.num_gen = J
-        self.num_disc = J_d 
-        self.num_enc = J_e
+        self.num_disc = J_d if J_d is not None else 1
         self.num_mcmc = M
         self.eta = eta
         self.alpha = alpha
         # ML
         self.ml = ml
         if self.ml:
-            assert self.num_gen == 1 and self.num_disc == 1 and \
-                   self.num_enc == 1 and self.num_mcmc == 1, \
-                   "invalid settings for ML training"
+            assert self.num_gen == 1 and self.num_disc == 1 and self.num_mcmc == 1, "invalid settings for ML training"
 
         self.noise_std = np.sqrt(2 * self.alpha * self.eta)
 
         def get_strides(num_layers, num_pool):
-            interval = int(math.floor(num_layers / float(num_pool)))
-            strides = np.array([1] * num_layers)
-            strides[0:interval * num_pool:interval] = 2
+            interval = int(math.floor(num_layers/float(num_pool)))
+            strides = np.array([1]*num_layers)
+            strides[0:interval*num_pool:interval] = 2
             return strides
 
         self.num_pool = 4
         self.max_num_dfs = 512
         self.gen_strides = get_strides(num_layers, self.num_pool)
         self.disc_strides = self.gen_strides
-        self.enc_strides = self.gen_strides
         num_dfs = np.cumprod(np.array([self.df_dim] + list(self.disc_strides)))[:-1]
         num_dfs[num_dfs >= self.max_num_dfs] = self.max_num_dfs # memory
         self.num_dfs = list(num_dfs)
         self.num_gfs = self.num_dfs[::-1]
-        self.num_efs = self.num_dfs
-        
-        self.construct_from_hypers(
-            gen_strides=self.gen_strides, 
-            disc_strides=self.disc_strides,
-            enc_strides=self.enc_strides,
-            num_gfs=self.num_gfs, 
-            num_dfs=self.num_dfs,
-            num_efs=self.num_efs)
+
+        self.construct_from_hypers(gen_strides=self.gen_strides, disc_strides=self.disc_strides,
+                                   num_gfs=self.num_gfs, num_dfs=self.num_dfs)
         
         self.build_bgan_graph()
-    
-    def construct_from_hypers(self, gen_kernel_size=5, gen_strides=[2, 2, 2, 2],
-                              disc_kernel_size=5, disc_strides=[2, 2, 2, 2],
-                              enc_kernel_size=5, enc_strides=[2, 2, 2, 2],
-                              num_dfs=None, num_gfs=None, num_efs=None):
+        self.build_test_graph()
+
+
+    def construct_from_hypers(self, gen_kernel_size=5, gen_strides=[2,2,2,2],
+                              disc_kernel_size=5, disc_strides=[2,2,2,2],
+                              num_dfs=None, num_gfs=None):
 
         
-        self.d_batch_norm = AttributeDict(
-            [("d_bn%i" % dbn_i, batch_norm(name='d_bn%i' % dbn_i)) \
-             for dbn_i in range(len(disc_strides))])
-        self.sup_d_batch_norm = AttributeDict(
-            [("sd_bn%i" % dbn_i, batch_norm(name='sup_d_bn%i' % dbn_i)) \
-             for dbn_i in range(5)])
-        self.g_batch_norm = AttributeDict(
-            [("g_bn%i" % gbn_i, batch_norm(name='g_bn%i' % gbn_i)) \
-             for gbn_i in range(len(gen_strides))])
-        self.e_batch_norm = AttributeDict(
-            [("e_bn%i" % ebn_i, batch_norm(name="e_bn%i" % ebn_i)) \
-             for ebn_i in range(len(enc_strides))])
-    
+        self.d_batch_norm = AttributeDict([("d_bn%i" % dbn_i, batch_norm(name='d_bn%i' % dbn_i)) for dbn_i in range(len(disc_strides))])
+        self.sup_d_batch_norm = AttributeDict([("sd_bn%i" % dbn_i, batch_norm(name='sup_d_bn%i' % dbn_i)) for dbn_i in range(5)])
+        self.g_batch_norm = AttributeDict([("g_bn%i" % gbn_i, batch_norm(name='g_bn%i' % gbn_i)) for gbn_i in range(len(gen_strides))])
+
         if num_dfs is None:
-            num_dfs = [self.df_dim, self.df_dim * 2, self.df_dim * 4, self.df_dim * 8]
+            num_dfs = [self.df_dim, self.df_dim*2, self.df_dim*4, self.df_dim*8]
             
         if num_gfs is None:
-            num_gfs = [self.gf_dim * 8, self.gf_dim * 4, self.gf_dim * 2, self.gf_dim]
-        
-        if num_efs is None:
-            num_efs = [self.ef_dim * (2 ** i) for i in range(4)]
-        
+            num_gfs = [self.gf_dim*8, self.gf_dim*4, self.gf_dim*2, self.gf_dim]
+
         assert len(gen_strides) == len(num_gfs), "invalid hypers!"
         assert len(disc_strides) == len(num_dfs), "invalid hypers!"
-        assert len(enc_strides) == len(num_efs), "invalid hypers!"
 
         s_h, s_w = self.x_dim[0], self.x_dim[1]
         ks = gen_kernel_size
@@ -128,21 +104,18 @@ class BDCGAN(object):
         num_gfs = num_gfs + [self.c_dim]
         self.gen_kernel_sizes = [ks]
         for layer in range(len(gen_strides))[::-1]:
-            self.gen_output_dims["g_h%i_out" % (layer + 1)] = (s_h, s_w)
+            self.gen_output_dims["g_h%i_out" % (layer+1)] = (s_h, s_w)
             assert gen_strides[layer] <= 2, "invalid stride"
             assert ks % 2 == 1, "invalid kernel size"
-            self.gen_weight_dims["g_h%i_W" % (layer + 1)] = \
-                (ks, ks, num_gfs[layer + 1], num_gfs[layer])
-            self.gen_weight_dims["g_h%i_b" % (layer + 1)] = (num_gfs[layer + 1],)
-            s_h = conv_out_size(s_h, gen_strides[layer])
-            s_w = conv_out_size(s_w, gen_strides[layer])
+            self.gen_weight_dims["g_h%i_W" % (layer+1)] = (ks, ks, num_gfs[layer+1], num_gfs[layer])
+            self.gen_weight_dims["g_h%i_b" % (layer+1)] = (num_gfs[layer+1],)
+            s_h, s_w = conv_out_size(s_h, gen_strides[layer]), conv_out_size(s_w, gen_strides[layer])
             ks = kernel_sizer(ks, gen_strides[layer])
             self.gen_kernel_sizes.append(ks)
 
 
-        self.gen_weight_dims.update(OrderedDict(
-            [("g_h0_lin_W", (self.z_dim, num_gfs[0] * s_h * s_w)),
-             ("g_h0_lin_b", (num_gfs[0] * s_h * s_w,))]))
+        self.gen_weight_dims.update(OrderedDict([("g_h0_lin_W", (self.z_dim, num_gfs[0] * s_h * s_w)),
+                                                 ("g_h0_lin_b", (num_gfs[0] * s_h * s_w,))]))
         self.gen_output_dims["g_h0_out"] = (s_h, s_w)
 
         self.disc_weight_dims = OrderedDict()
@@ -153,45 +126,18 @@ class BDCGAN(object):
         for layer in range(len(disc_strides)):
             assert disc_strides[layer] <= 2, "invalid stride"
             assert ks % 2 == 1, "invalid kernel size"
-            self.disc_weight_dims["d_h%i_W" % layer] = \
-                (ks, ks, num_dfs[layer], num_dfs[layer + 1])
-            self.disc_weight_dims["d_h%i_b" % layer] = (num_dfs[layer + 1],)
-            s_h = conv_out_size(s_h, disc_strides[layer])
-            s_w = conv_out_size(s_w, disc_strides[layer])
+            self.disc_weight_dims["d_h%i_W" % layer] = (ks, ks, num_dfs[layer], num_dfs[layer+1])
+            self.disc_weight_dims["d_h%i_b" % layer] = (num_dfs[layer+1],)
+            s_h, s_w = conv_out_size(s_h, disc_strides[layer]), conv_out_size(s_w, disc_strides[layer])
             ks = kernel_sizer(ks, disc_strides[layer])
             self.disc_kernel_sizes.append(ks)
-        self.disc_weight_dims.update(OrderedDict(
-            [("d_h_enc_lin_W", (self.z_dim, num_dfs[-1])),
-             ("d_h_enc_lin_b", (num_dfs[-1],)),
-             ("d_h0_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
-             ("d_h0_lin_b", (num_dfs[-1],)),
-             ("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
-             ("d_h1_lin_b", (num_dfs[-1],)),
-             ("d_h_out_lin_W", (num_dfs[-1], self.K)),
-             ("d_h_out_lin_b", (self.K,))]))
-        print("ADDED ONE MORE DISC LIN LAYER") 
-        self.enc_weight_dims = OrderedDict()
-        s_h, s_w = self.x_dim[0], self.x_dim[1]
-        num_efs = [self.c_dim] + num_efs
-        ks = enc_kernel_size
-        self.enc_kernel_sizes = [ks]
-        for layer in range(len(enc_strides)):
-            assert enc_strides[layer] <= 2, "invalid strides"    
-            assert ks % 2 == 1, "invalid kernel size"
-            self.enc_weight_dims["e_h%i_W" % layer] = \
-                (ks, ks, num_efs[layer], num_efs[layer + 1])
-            self.enc_weight_dims["e_h%i_b" % layer] = (num_efs[layer + 1],)
-            s_h = conv_out_size(s_h, enc_strides[layer])
-            s_w = conv_out_size(s_w, enc_strides[layer])
-            ks = kernel_sizer(ks, enc_strides[layer])
-            self.enc_kernel_sizes.append(ks)
-        
-        self.enc_weight_dims.update(OrderedDict(
-            [("e_h_end_lin_W", (num_efs[-1] * s_h * s_w, num_efs[-1])),
-             ("e_h_end_lin_b", (num_efs[-1],)),
-             ("e_h_out_lin_W", (num_efs[-1], self.z_dim)),
-             ("e_h_out_lin_b", (self.z_dim,))]))
-        
+
+        self.disc_weight_dims.update(OrderedDict([("d_h_end_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
+                                                  ("d_h_end_lin_b", (num_dfs[-1],)),
+                                                  ("d_h_out_lin_W", (num_dfs[-1], self.K)),
+                                                  ("d_h_out_lin_b", (self.K,))]))
+
+
         for k, v in self.gen_output_dims.items():
             print("%s: %s" % (k, v))
         print('****')
@@ -200,10 +146,59 @@ class BDCGAN(object):
         print('****')
         for k, v in self.disc_weight_dims.items():
             print("%s: %s" % (k, v))
-        print("*****")
-        for k, v in self.enc_weight_dims.items():
-            print("%s: %s" % (k, v))
+
+
+
+
+
+    def construct_nets(self):
+
+        self.num_disc_layers = 5
+        self.num_gen_layers = 5
+        self.d_batch_norm = AttributeDict([("d_bn%i" % dbn_i, batch_norm(name='d_bn%i' % dbn_i)) for dbn_i in range(self.num_disc_layers)])
+        self.sup_d_batch_norm = AttributeDict([("sd_bn%i" % dbn_i, batch_norm(name='sup_d_bn%i' % dbn_i)) for dbn_i in range(self.num_disc_layers)])
+        self.g_batch_norm = AttributeDict([("g_bn%i" % gbn_i, batch_norm(name='g_bn%i' % gbn_i)) for gbn_i in range(self.num_gen_layers)])
+
+
+        s_h, s_w = self.x_dim[0], self.x_dim[1]
+        s_h2, s_w2 = conv_out_size(s_h, 2), conv_out_size(s_w, 2)
+        s_h4, s_w4 = conv_out_size(s_h2, 2), conv_out_size(s_w2, 2)
+        s_h8, s_w8 = conv_out_size(s_h4, 2), conv_out_size(s_w4, 2)
+        s_h16, s_w16 = conv_out_size(s_h8, 2), conv_out_size(s_w8, 2)
+
+        self.gen_output_dims = OrderedDict([("g_h0_out", (s_h16, s_w16)),
+                                            ("g_h1_out", (s_h8, s_w8)),
+                                            ("g_h2_out", (s_h4, s_w4)),
+                                            ("g_h3_out", (s_h2, s_w2)),
+                                            ("g_h4_out", (s_h, s_w))])
+
         
+        self.gen_weight_dims = OrderedDict([("g_h0_lin_W", (self.z_dim, self.gf_dim * 8 * s_h16 * s_w16)),
+                                            ("g_h0_lin_b", (self.gf_dim * 8 * s_h16 * s_w16,)),
+                                            ("g_h1_W", (5, 5, self.gf_dim*4, self.gf_dim*8)),
+                                            ("g_h1_b", (self.gf_dim*4,)),
+                                            ("g_h2_W", (5, 5, self.gf_dim*2, self.gf_dim*4)),
+                                            ("g_h2_b", (self.gf_dim*2,)),
+                                            ("g_h3_W", (5, 5, self.gf_dim*1, self.gf_dim*2)),
+                                            ("g_h3_b", (self.gf_dim*1,)),
+                                            ("g_h4_W", (5, 5, self.c_dim, self.gf_dim*1)),
+                                            ("g_h4_b", (self.c_dim,))])
+
+        self.disc_weight_dims = OrderedDict([("d_h0_W", (5, 5, self.c_dim, self.df_dim)),
+                                             ("d_h0_b", (self.df_dim,)),
+                                             ("d_h1_W", (5, 5, self.df_dim, self.df_dim*2)),
+                                             ("d_h1_b", (self.df_dim*2,)),
+                                             ("d_h2_W", (5, 5, self.df_dim*2, self.df_dim*4)),
+                                             ("d_h2_b", (self.df_dim*4,)),
+                                             ("d_h3_W", (5, 5, self.df_dim*4, self.df_dim*8)),
+                                             ("d_h3_b", (self.df_dim*8,)),
+                                             ("d_h_end_lin_W", (self.df_dim * 8 * s_h16 * s_w16, self.df_dim*4)),
+                                             ("d_h_end_lin_b", (self.df_dim*4,)),
+                                             ("d_h_out_lin_W", (self.df_dim*4, self.K)),
+                                             ("d_h_out_lin_b", (self.K,))])
+
+
+
     def _get_optimizer(self, lr):
         if self.optimizer == 'adam':
             return tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5)
@@ -214,15 +209,12 @@ class BDCGAN(object):
 
     def initialize_wgts(self, scope_str):
 
-        if scope_str == GEN:
+        if scope_str == "generator":
             weight_dims = self.gen_weight_dims
             numz = self.num_gen
-        elif scope_str == DISC:
+        elif scope_str == "discriminator":
             weight_dims = self.disc_weight_dims
             numz = self.num_disc
-        elif scope_str == ENC:
-            weight_dims = self.enc_weight_dims
-            numz = self.num_enc
         else:
             raise RuntimeError("invalid scope!")
 
@@ -232,370 +224,225 @@ class BDCGAN(object):
                 for m in range(self.num_mcmc):
                     wgts_ = AttributeDict()
                     for name, shape in weight_dims.items():
-                        wgts_[name] = tf.get_variable(
-                            "%s_%04d_%04d" % (name, zi, m),
-                            shape, 
-                            initializer=tf.random_normal_initializer(stddev=0.02)) # TODO?
-                    param_list.append(wgts_)
 
+                        wgts_[name] = tf.get_variable("%s_%04d_%04d" % (name, zi, m),
+                                                      shape, initializer=tf.random_normal_initializer(stddev=0.02))
+                    param_list.append(wgts_)
             return param_list
         
 
     def build_bgan_graph(self):
     
-        self.inputs = tf.placeholder(
-            tf.float32, [self.batch_size] + self.x_dim, name='real_images')
+        self.inputs = tf.placeholder(tf.float32,
+                                     [self.batch_size] + self.x_dim, name='real_images')
+        
+        self.labeled_inputs = tf.placeholder(tf.float32,
+                                             [self.batch_size] + self.x_dim, name='real_images_w_labels')
+        
+        self.labels = tf.placeholder(tf.float32,
+                                     [self.batch_size, self.K], name='real_targets')
 
-        self.z = tf.placeholder(
-            tf.float32, [self.batch_size, self.z_dim, self.num_gen], name='z')
-        self.z_sampler = tf.placeholder(
-            tf.float32, [self.batch_size, self.z_dim], name='z_sampler')
+
+        self.z = tf.placeholder(tf.float32, [self.batch_size, self.z_dim, self.num_gen], name='z')
+        self.z_sampler = tf.placeholder(tf.float32, [self.batch_size, self.z_dim], name='z_sampler')
         
         # initialize generator weights
-        self.gen_param_list = self.initialize_wgts(GEN)
-        self.disc_param_list = self.initialize_wgts(DISC)
-        self.enc_param_list = self.initialize_wgts(ENC)
-
+        self.gen_param_list = self.initialize_wgts("generator")
+        self.disc_param_list = self.initialize_wgts("discriminator")
         ### build discrimitive losses and optimizers
         # prep optimizer args
-        self.d_learning_rate = tf.placeholder(tf.float32, shape=[])
+        self.d_semi_learning_rate = tf.placeholder(tf.float32, shape=[])
         
         # compile all disciminative weights
         t_vars = tf.trainable_variables()
         self.d_vars = []
         for di in range(self.num_disc):
             for m in range(self.num_mcmc):
-                self.d_vars.append(
-                    [var for var in t_vars \
-                     if 'd_h' in var.name and "_%04d_%04d" % (di, m) in var.name])
+                self.d_vars.append([var for var in t_vars if 'd_' in var.name and "_%04d_%04d" % (di, m) in var.name])
+
         ### build disc losses and optimizers
-        self.d_losses_reals, self.d_losses_fakes = [], []
-        self.d_optims_reals, self.d_optims_fakes = [], []
-        self.d_optims_adam_reals, self.d_optims_adam_fakes = [], []
+        self.d_losses, self.d_optims_semi, self.d_optims_semi_adam = [], [], []
         for di, disc_params in enumerate(self.disc_param_list):
 
-            d_prior_loss = self.prior(disc_params, DISC)
-            d_losses_reals_ = []
-            for enc_params in self.enc_param_list:
-                encoded_inputs = self.encoder(self.inputs, enc_params)
-                d_probs, d_logits, _ = self.discriminator(
-                    self.inputs, encoded_inputs, self.K, disc_params)
-
-                constant_labels = np.zeros((self.batch_size, self.K))
-                constant_labels[:, 1] = 1.0  # real
-                d_loss_real_ = tf.reduce_mean(
-                    tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    d_loss_real_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
-
-            d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))    
-            self.d_losses_reals.append(d_loss_reals)
- 
-            d_losses_fakes_ = []   
+            d_probs, d_logits, _ = self.discriminator(self.inputs, self.K, disc_params)
+            
+            d_loss_real = -tf.reduce_mean(tf.reduce_logsumexp(d_logits, 1)) +\
+            tf.reduce_mean(tf.nn.softplus(tf.reduce_logsumexp(d_logits, 1)))
+            
+            d_loss_fakes = []
             for gi, gen_params in enumerate(self.gen_param_list):
-                z = self.z[:, :, gi % self.num_gen]
-                d_probs_, d_logits_, _ = self.discriminator(
-                    self.generator(z, gen_params), z, self.K, disc_params)
-                constant_labels = np.zeros((self.batch_size, self.K))
-                # class label indicating it came from generator, aka fake
-                constant_labels[:, 0] = 1.0
-                d_loss_fake_ = tf.reduce_mean(
-                    tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits_,
-                        labels=tf.constant(constant_labels)))
+                d_probs_, d_logits_, _ = self.discriminator(self.generator(self.z[:, :, gi % self.num_gen], gen_params), 
+                                                            self.K, disc_params)
+                d_loss_fake_ = tf.reduce_mean(tf.nn.softplus(tf.reduce_logsumexp(d_logits_, 1)))
+                d_loss_fakes.append(d_loss_fake_)
+
+            d_sup_probs, d_sup_logits, _ = self.discriminator(self.labeled_inputs, self.K, disc_params)
+            d_loss_sup = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=d_sup_logits,
+                                                                                labels=self.labels))
+            d_losses_semi = []
+            for d_loss_fake_ in d_loss_fakes:
+                d_loss_semi_ = d_loss_sup + d_loss_real * float(self.num_gen) + d_loss_fake_
                 if not self.ml:
-                    d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))        
-            
-            d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))        
-            self.d_losses_fakes.append(d_loss_fakes)
-            # TODO???
-            """
-            for d_loss_ in d_loss_reals:
-                if not self.ml:
-                    d_loss_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses.append(tf.reshape(d_loss_, [1]))
+                    d_loss_semi_ += self.disc_prior(disc_params) + self.disc_noise(disc_params)
+                d_losses_semi.append(tf.reshape(d_loss_semi_, [1]))
 
-            for d_loss_ in d_loss_fakes:
-                #d_loss_ = d_loss_real_ * float(self.num_gen) + d_loss_fake_ # why???
-                if not self.ml:
-                    d_loss_ += d_prior_loss + \
-                               self.noise(disc_params, DISC)
-                d_losses.append(tf.reshape(d_loss_, [1]))
-            """
-            d_opt = self._get_optimizer(self.d_learning_rate)
-            d_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.d_learning_rate, beta1=0.5)
-
-            self.d_optims_reals.append(
-                d_opt.minimize(d_loss_reals, var_list=self.d_vars[di]))
-            self.d_optims_adam_reals.append(
-                d_opt_adam.minimize(d_loss_reals, var_list=self.d_vars[di]))
-
-            self.d_optims_fakes.append(
-                d_opt.minimize(d_loss_fakes, var_list=self.d_vars[di]))
-            self.d_optims_adam_fakes.append(
-                d_opt_adam.minimize(d_loss_fakes, var_list=self.d_vars[di]))
-
-        print("compiled discriminator losses\nd loss reals %r\nd_loss fakes %r" %
-              (self.d_losses_reals, self.d_losses_fakes))
-
-        ### build encoder losses and optimizers
-        self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.e_losses, self.e_optims, self.e_optims_adam = [], [], []
-        self.e_vars = []
-        for ei in range(self.num_enc):
-            for m in range(self.num_mcmc):
-                self.e_vars.append(
-                    [var for var in t_vars \
-                     if "e_h" in var.name and "_%04d_%04d" % (ei, m) in var.name])     
-        for ei, enc_params in enumerate(self.enc_param_list):
-            ei_losses = []
-            encoded_inputs = self.encoder(self.inputs, enc_params)
-            e_prior_loss = self.prior(enc_params, ENC)
-            for disc_params in self.disc_param_list:
-                d_probs, d_logits, d_features = self.discriminator(
-                    self.inputs, encoded_inputs, self.K, disc_params)
-                constant_labels = np.zeros((self.batch_size, self.K)) 
-                constant_labels[:, 0] = 1.0 # want to make real input appear fake
-                
-                e_loss_ = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    e_loss_ += e_prior_loss + self.noise(enc_params, ENC)
-                
-                ei_losses.append(tf.reshape(e_loss_, [1]))
-            e_loss = tf.reduce_logsumexp(tf.concat(ei_losses, 0)) 
-            self.e_losses.append(e_loss)
-            e_opt = self._get_optimizer(self.e_learning_rate)
-            self.e_optims.append(
-                e_opt.minimize(e_loss, var_list=self.e_vars[ei]))
-            e_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.e_learning_rate, beta1=0.5)
-            self.e_optims_adam.append(
-                e_opt_adam.minimize(e_loss, var_list=self.e_vars[ei]))
-            
-        print("compiled encoder losses", self.e_losses)
+            d_loss_semi = tf.reduce_logsumexp(tf.concat(d_losses_semi, 0))
+            self.d_losses.append(d_loss_semi)
+            d_opt_semi = self._get_optimizer(self.d_semi_learning_rate)
+            self.d_optims_semi.append(d_opt_semi.minimize(d_loss_semi, var_list=self.d_vars[di]))
+            d_opt_semi_adam = tf.train.AdamOptimizer(learning_rate=self.d_semi_learning_rate, beta1=0.5)
+            self.d_optims_semi_adam.append(d_opt_semi_adam.minimize(d_loss_semi, var_list=self.d_vars[di]))
 
         ### build generative losses and optimizers
         self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
         self.g_vars = []
         for gi in range(self.num_gen):
             for m in range(self.num_mcmc):
-                self.g_vars.append(
-                    [var for var in t_vars \
-                     if 'g_h' in var.name and "_%04d_%04d" % (gi, m) in var.name])
-
-        self.g_losses, self.g_optims, self.g_optims_adam = [], [], []
+                self.g_vars.append([var for var in t_vars if 'g_' in var.name and "_%04d_%04d" % (gi, m) in var.name])
+        
+        self.g_losses, self.g_optims_semi, self.g_optims_semi_adam = [], [], []
         for gi, gen_params in enumerate(self.gen_param_list):
 
             gi_losses = []
-            g_prior_loss = self.prior(gen_params, GEN)
             for disc_params in self.disc_param_list:
-                z = self.z[:, :, gi % self.num_gen]
-                d_probs_, d_logits_, d_features_fake = self.discriminator(
-                    self.generator(z, gen_params), z, self.K, disc_params)
-                # class label indicating that this fake is real
-                constant_labels[:, 1] = 1.0
-                g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits_,
-                        labels=tf.constant(constant_labels)))
+                d_probs_, d_logits_, d_features_fake = self.discriminator(self.generator(self.z[:, :, gi % self.num_gen],
+                                                                                         gen_params),
+                                                                          self.K, disc_params)
+                _, _, d_features_real = self.discriminator(self.inputs, self.K, disc_params)
+                g_loss_ = -tf.reduce_mean(tf.reduce_logsumexp(d_logits_, 1)) +\
+                tf.reduce_mean(tf.nn.softplus(tf.reduce_logsumexp(d_logits_, 1))) # not needed?!
+                g_loss_ += tf.reduce_mean(huber_loss(d_features_real[-1], d_features_fake[-1]))
                 if not self.ml:
-                    g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
-                gi_losses.append(tf.reshape(g_disc_loss, [1]))
-                # Also why???
-                """
-                for enc_params in self.enc_param_list:
-                    encoded_inputs = self.encoder(self.inputs, enc_params)
-                    _, _, d_features_real = self.discriminator(
-                        self.inputs, encoded_inputs, self.K, disc_params)
-                    g_hub_loss = tf.reduce_mean(
-                        huber_loss(d_features_real, d_features_fake))
-                    
-                    g_loss_ = g_disc_loss + g_hub_loss
-                    if not self.ml:
-                        g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
-                    gi_losses.append(tf.reshape(g_loss_, [1]))
-                    self.raw_g_losses.append(g_loss_)
-                """         
+                    g_loss_ += self.gen_prior(gen_params) + self.gen_noise(gen_params)
+                gi_losses.append(tf.reshape(g_loss_, [1]))
+                
             g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
             self.g_losses.append(g_loss)
             g_opt = self._get_optimizer(self.g_learning_rate)
-            self.g_optims.append(g_opt.minimize(g_loss, var_list=self.g_vars[gi]))
-            g_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.g_learning_rate, beta1=0.5)
-            self.g_optims_adam.append(
-                g_opt_adam.minimize(g_loss, var_list=self.g_vars[gi]))
-
-        print("compiled generator losses", self.g_losses)      
+            self.g_optims_semi.append(g_opt.minimize(g_loss, var_list=self.g_vars[gi]))
+            g_opt_adam = tf.train.AdamOptimizer(learning_rate=self.g_learning_rate, beta1=0.5)
+            self.g_optims_semi_adam.append(g_opt_adam.minimize(g_loss, var_list=self.g_vars[gi]))
 
         ### build samplers
-        print("Not setting train to false in samplers/reconstructers/encoders")
-        # TODO: set train to false?
         self.gen_samplers = []
-        for gen_params in self.gen_param_list:
-            self.gen_samplers.append(
-                self.generator(self.z_sampler, gen_params))
-        
-        self.reconstructers = OrderedDict({})
         for gi, gen_params in enumerate(self.gen_param_list):
-            for ei, enc_params in enumerate(self.enc_param_list):
-                self.reconstructers[(gi, ei)] = self.generator(
-                    self.encoder(self.inputs, enc_params), 
-                    gen_params)
-        
-        self.encoders = []
-        for enc_params in self.enc_param_list:
-            self.encoders.append(
-                self.encoder(self.inputs, enc_params))    
-        
+            self.gen_samplers.append(self.generator(self.z_sampler, gen_params))
 
-    def discriminator(self, image, encoded_image, K, disc_params, train=True):
+        ### build vanilla supervised loss
+        self.lbls = tf.placeholder(tf.float32,
+                                   [self.batch_size, self.K], name='real_sup_targets')
 
-        with tf.variable_scope(DISC, reuse=tf.AUTO_REUSE) as scope:
+        self.S, self.S_logits = self.sup_discriminator(self.inputs, self.K)
+        self.s_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.S_logits,
+                                                                             labels=self.lbls))
+        t_vars = tf.trainable_variables()
+        self.sup_vars = [var for var in t_vars if 'sup_' in var.name]
+        supervised_lr = 0.05 * self.lr
+        s_opt = self._get_optimizer(supervised_lr)
+        self.s_optim = s_opt.minimize(self.s_loss, var_list=self.sup_vars)
+        s_opt_adam = tf.train.AdamOptimizer(learning_rate=supervised_lr, beta1=0.5)
+        self.s_optim_adam = s_opt_adam.minimize(self.s_loss, var_list=self.sup_vars)
+
+
+    def build_test_graph(self):
+
+        self.test_inputs = tf.placeholder(tf.float32,
+                                          [self.batch_size] + self.x_dim, name='real_test_images')
+
+        self.test_d_probs, self.test_d_logits = [], []
+        for disc_params in self.disc_param_list:
+            test_d_probs_, test_d_logits_, _ = self.discriminator(self.test_inputs, self.K, disc_params, train=False)
+            self.test_d_probs.append(test_d_probs_)
+            self.test_d_logits.append(test_d_logits_)
+
+        # build standard purely supervised losses and optimizers
+        self.test_s_probs, self.test_s_logits = self.sup_discriminator(self.test_inputs, self.K, reuse=True)
+
+                                             
+                    
+    def sup_discriminator(self, image, K, reuse=False):
+        # TODO collapse this into disc
+        with tf.variable_scope("sup_discriminator") as scope:
+            if reuse:
+                scope.reuse_variables()
+
+            h0 = lrelu(conv2d(image, self.df_dim, name='sup_h0_conv'))
+            h1 = lrelu(self.sup_d_batch_norm.sd_bn1(conv2d(h0,
+                                                           self.df_dim * 2,
+                                                           name='sup_h1_conv')))
+            h2 = lrelu(self.sup_d_batch_norm.sd_bn2(conv2d(h1,
+                                                           self.df_dim * 4,
+                                                           name='sup_h2_conv')))
+            h3 = lrelu(self.sup_d_batch_norm.sd_bn3(conv2d(h2,
+                                                           self.df_dim * 8,
+                                                           name='sup_h3_conv')))
+            h4 = linear(tf.reshape(h3, [self.batch_size, -1]), K, 'sup_h3_lin')
+            return tf.nn.softmax(h4), h4
+
+
+    def discriminator(self, image, K, disc_params, train=True):
+
+        with tf.variable_scope("discriminator") as scope:
 
             h = image
-            layer = 0
+            for layer in range(len(self.disc_strides)):
+                if layer == 0:
+                    h = lrelu(conv2d(h,
+                                     self.disc_weight_dims["d_h%i_W" % layer][-1],
+                                     name='d_h%i_conv' % layer,
+                                     k_h=self.disc_kernel_sizes[layer], k_w=self.disc_kernel_sizes[layer],
+                                     d_h=self.disc_strides[layer], d_w=self.disc_strides[layer],
+                                     w=disc_params["d_h%i_W" % layer], biases=disc_params["d_h%i_b" % layer]))
+                else:
+                    h = lrelu(self.d_batch_norm["d_bn%i" % layer](conv2d(h,
+                                                                         self.disc_weight_dims["d_h%i_W" % layer][-1],
+                                                                         name='d_h%i_conv' % layer,
+                                                                         k_h=self.disc_kernel_sizes[layer], k_w=self.disc_kernel_sizes[layer],
+                                                                         d_h=self.disc_strides[layer], d_w=self.disc_strides[layer],
+                                                                         w=disc_params["d_h%i_W" % layer], biases=disc_params["d_h%i_b" % layer]), train=train))
 
-            h = lrelu(conv2d(h,
-                             self.disc_weight_dims["d_h%i_W" % layer][-1],
-                             name='d_h%i_conv' % layer,
-                             k_h=self.disc_kernel_sizes[layer], 
-                             k_w=self.disc_kernel_sizes[layer],
-                             d_h=self.disc_strides[layer], 
-                             d_w=self.disc_strides[layer],
-                             w=disc_params["d_h%i_W" % layer], 
-                             biases=disc_params["d_h%i_b" % layer]))
+            h_end = lrelu(linear(tf.reshape(h, [self.batch_size, -1]),
+                              self.df_dim*4, "d_h_end_lin",
+                              matrix=disc_params.d_h_end_lin_W, bias=disc_params.d_h_end_lin_b)) # for feature norm
+            h_out = linear(h_end, K,
+                           'd_h_out_lin',
+                           matrix=disc_params.d_h_out_lin_W, bias=disc_params.d_h_out_lin_b)
             
-            for layer in range(1, len(self.disc_strides)):
-                h = lrelu(self.d_batch_norm["d_bn%i" % layer](
-                    conv2d(h,
-                           self.disc_weight_dims["d_h%i_W" % layer][-1],
-                           name='d_h%i_conv' % layer,
-                           k_h=self.disc_kernel_sizes[layer], 
-                           k_w=self.disc_kernel_sizes[layer],
-                           d_h=self.disc_strides[layer], 
-                           d_w=self.disc_strides[layer],
-                           w=disc_params["d_h%i_W" % layer], 
-                           biases=disc_params["d_h%i_b" % layer]), 
-                    train=train))
+            return tf.nn.softmax(h_out), h_out, [h_end]
             
-            h_enc = lrelu(linear(
-                encoded_image,
-                self.df_dim * 4, # not needed, and not correct anways
-                "d_h_enc_lin",
-                matrix=disc_params["d_h_enc_lin_W"],
-                bias=disc_params["d_h_enc_lin_b"]))
 
-            h = tf.reshape(h, [self.batch_size, -1])
-    
-            for layer in range(2): #TODO           
-                h = lrelu(linear(
-                    h,
-                    self.df_dim * 4, 
-                    "d_h%d_lin" % layer,
-                    matrix=disc_params["d_h%d_lin_W" % layer], 
-                    bias=disc_params["d_h%d_lin_b" % layer])) # for feature norm
-                h += h_enc 
+    def generator(self, z, gen_params):
 
-            h_out = linear(
-                h, 
-                K, 
-                'd_h_out_lin',
-                matrix=disc_params["d_h_out_lin_W"], 
-                bias=disc_params["d_h_out_lin_b"])
-            
-            return tf.nn.softmax(h_out), h_out, h
-    
-    def encoder(self, image, enc_params, train=True):
-        with tf.variable_scope(ENC, reuse=tf.AUTO_REUSE) as scope:
-            h = image
-            layer = 0
-      
-            h = lrelu(conv2d(h,
-                             self.enc_weight_dims["e_h%i_W" % layer][-1],
-                             name='e_h%i_conv' % layer,
-                             k_h=self.enc_kernel_sizes[layer], 
-                             k_w=self.enc_kernel_sizes[layer],
-                             d_h=self.enc_strides[layer], 
-                             d_w=self.enc_strides[layer],
-                             w=enc_params["e_h%i_W" % layer], 
-                             biases=enc_params["e_h%i_b" % layer]))
-            
-            for layer in range(1, len(self.enc_strides)):
-                h = lrelu(self.e_batch_norm["e_bn%i" % layer](
-                    conv2d(h,
-                           self.enc_weight_dims["e_h%i_W" % layer][-1],
-                           name='e_h%i_conv' % layer,
-                           k_h=self.enc_kernel_sizes[layer], 
-                           k_w=self.enc_kernel_sizes[layer],
-                           d_h=self.enc_strides[layer], 
-                           d_w=self.enc_strides[layer],
-                           w=enc_params["e_h%i_W" % layer], 
-                           biases=enc_params["e_h%i_b" % layer]), 
-                    train=train))
-        
-            h_end = lrelu(linear(
-                tf.reshape(h, [self.batch_size, -1]),
-                self.ef_dim * 4,
-                "e_h_end_lin",
-                matrix=enc_params["e_h_end_lin_W"],
-                bias=enc_params["e_h_end_lin_b"]))
-            
-            h_out = lrelu(linear(
-                h_end,
-                self.z_dim,
-                "e_h_out_lin",
-                matrix=enc_params["e_h_out_lin_W"],
-                bias=enc_params["e_h_out_lin_b"]))
-            
-            return h_out
-                        
-
-    def generator(self, z, gen_params, train=True):
-
-        with tf.variable_scope(GEN, reuse=tf.AUTO_REUSE) as scope:
+        with tf.variable_scope("generator") as scope:
 
             h = linear(z, self.gen_weight_dims["g_h0_lin_W"][-1], 'g_h0_lin',
                        matrix=gen_params.g_h0_lin_W, bias=gen_params.g_h0_lin_b)
-            h = tf.nn.relu(self.g_batch_norm["g_bn0"](h, train=train))
+            h = tf.nn.relu(self.g_batch_norm.g_bn0(h))
 
-            h = tf.reshape(h, [self.batch_size, 
-                               self.gen_output_dims["g_h0_out"][0],
+            h = tf.reshape(h, [self.batch_size, self.gen_output_dims["g_h0_out"][0],
                                self.gen_output_dims["g_h0_out"][1], -1])
 
-            for layer in range(1, len(self.gen_strides) + 1):
+            for layer in range(1, len(self.gen_strides)+1):
 
-                out_shape = [self.batch_size, 
-                             self.gen_output_dims["g_h%i_out" % layer][0],
-                             self.gen_output_dims["g_h%i_out" % layer][1], 
-                             self.gen_weight_dims["g_h%i_W" % layer][-2]]
+                out_shape = [self.batch_size, self.gen_output_dims["g_h%i_out" % layer][0],
+                             self.gen_output_dims["g_h%i_out" % layer][1], self.gen_weight_dims["g_h%i_W" % layer][-2]]
 
                 h = deconv2d(h,
                              out_shape,
-                             k_h=self.gen_kernel_sizes[layer - 1], 
-                             k_w=self.gen_kernel_sizes[layer - 1],
-                             d_h=self.gen_strides[layer - 1], 
-                             d_w=self.gen_strides[layer - 1],
+                             k_h=self.gen_kernel_sizes[layer-1], k_w=self.gen_kernel_sizes[layer-1],
+                             d_h=self.gen_strides[layer-1], d_w=self.gen_strides[layer-1],
                              name='g_h%i' % layer,
-                             w=gen_params["g_h%i_W" % layer], 
-                             biases=gen_params["g_h%i_b" % layer])
+                             w=gen_params["g_h%i_W" % layer], biases=gen_params["g_h%i_b" % layer])
                 if layer < len(self.gen_strides):
-                    h = tf.nn.relu(self.g_batch_norm["g_bn%i" % layer](h, train=train))
+                    h = tf.nn.relu(self.g_batch_norm["g_bn%i" % layer](h))
 
             return tf.nn.tanh(h)        
-    
-        
-    def prior(self, params, scope_str):
-        assert scope_str in [DISC, GEN, ENC], \
-               "invalid scope!"
-        with tf.variable_scope(scope_str) as scope:
+
+
+    def gen_prior(self, gen_params):
+        with tf.variable_scope("generator") as scope:
             prior_loss = 0.0
-            for var in params.values():
+            for var in gen_params.values():
                 nn = tf.divide(var, self.prior_std)
                 prior_loss += tf.reduce_mean(tf.multiply(nn, nn))
                 
@@ -603,15 +450,35 @@ class BDCGAN(object):
 
         return prior_loss
 
-    def noise(self, params, scope_str): 
-        assert scope_str in [DISC, GEN, ENC], \
-               "invalid scope!"
-
-        with tf.variable_scope(scope_str) as scope:
+    def gen_noise(self, gen_params): 
+        with tf.variable_scope("generator") as scope:
             noise_loss = 0.0
-            for name, var in params.items():
-                noise_ = tf.contrib.distributions.Normal(
-                    loc=0., scale=self.noise_std * tf.ones(var.get_shape()))
+            for name, var in gen_params.items():
+                noise_ = tf.contrib.distributions.Normal(loc=0., scale=self.noise_std*tf.ones(var.get_shape()))
                 noise_loss += tf.reduce_sum(var * noise_.sample())
         noise_loss /= self.dataset_size
         return noise_loss
+
+    def disc_prior(self, disc_params):
+        with tf.variable_scope("discriminator") as scope:
+            prior_loss = 0.0
+            for var in disc_params.values():
+                nn = tf.divide(var, self.prior_std)
+                prior_loss += tf.reduce_mean(tf.multiply(nn, nn))
+                
+        prior_loss /= self.dataset_size
+
+        return prior_loss
+
+    def disc_noise(self, disc_params): 
+        with tf.variable_scope("discriminator") as scope:
+            noise_loss = 0.0
+            for var in disc_params.values():
+                noise_ = tf.contrib.distributions.Normal(loc=0., scale=self.noise_std*tf.ones(var.get_shape()))
+                noise_loss += tf.reduce_sum(var * noise_.sample())
+        noise_loss /= self.dataset_size
+        return noise_loss
+
+
+
+
