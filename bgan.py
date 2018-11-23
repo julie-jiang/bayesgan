@@ -8,7 +8,7 @@ from bgan_util import AttributeDict
 
 from dcgan_ops import *
 
-DISC, GEN, ENC = "discriminator", "generator", "encoder"
+DISC, GEN, ENC = "disc", "gen", "enc"
 FAKE_LABELS, REAL_LABELS = 1, 0
 
 def conv_out_size(size, stride):
@@ -28,7 +28,7 @@ class BDCGAN(object):
                  prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4,
                  alpha=0.01, optimizer='adam', wasserstein=False, 
                  ml=False, J_d=1, J_e=1):
-
+        assert J_e == J
 
         assert len(x_dim) == 3, "invalid image dims"
         c_dim = x_dim[2]
@@ -205,14 +205,22 @@ class BDCGAN(object):
         for k, v in self.enc_weight_dims.items():
             print("%s: %s" % (k, v))
         
-    def _get_optimizer(self, lr):
-        if self.optimizer == 'adam':
+    def _get_optimizer(self, lr, use_adam=True):
+        if self.optimizer == 'adam' or use_adam:
             return tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5)
         elif self.optimizer == 'sgd':
             return tf.train.MomentumOptimizer(learning_rate=lr, momentum=0.5)
         else:
             raise ValueError("Optimizer must be either 'adam' or 'sgd'")    
-
+    
+    def _compile_optimizers(self, scope_str, lr, loss, var_list):
+        with tf.variable_scope(scope_str) as scope:
+            opt_adam = self._get_optimizer(lr=lr, use_adam=True)
+            opt_adam = opt_adam.minimize(loss, var_list=var_list)
+            opt_user = self._get_optimizer(lr=lr, use_adam=False)
+            opt_user = opt_user.minimize(loss, var_list=var_list)
+            return opt_adam, opt_user
+    
     def initialize_wgts(self, scope_str):
 
         if scope_str == GEN:
@@ -240,7 +248,26 @@ class BDCGAN(object):
                     param_list.append(wgts_)
 
             return param_list
-        
+    def _get_vars(self, scope_str):
+        if scope_str == GEN:
+            prefix = "g"
+            numz = self.num_gen
+        elif scope_str == DISC:
+            prefix = "d"
+            numz = self.num_disc
+        elif scope_str == ENC:
+            prefix = "e"
+            numz = self.num_enc
+        else:
+            raise RuntimeError("invalid scope!")
+        var_list = []
+        for i in range(numz):
+            for m in range(self.num_mcmc):
+                var_list.append(
+                    [var for var in self.trainable_vars \
+                    if "%s_h" % prefix in var.name and \
+                       "_%04d_%04d" % (i, m) in var.name])
+        return var_list
 
     def build_bgan_graph(self):
     
@@ -252,32 +279,38 @@ class BDCGAN(object):
         self.z_sampler = tf.placeholder(
             tf.float32, [self.batch_size, self.z_dim], name='z_sampler')
         
-        # initialize generator weights
+        # initialize  weights
         self.gen_param_list = self.initialize_wgts(GEN)
         self.disc_param_list = self.initialize_wgts(DISC)
         self.enc_param_list = self.initialize_wgts(ENC)
-
-        ### build discrimitive losses and optimizers
-        # prep optimizer args
-        self.d_learning_rate = tf.placeholder(tf.float32, shape=[])
         
-        # compile all disciminative weights
-        t_vars = tf.trainable_variables()
-        self.d_vars = []
-        for di in range(self.num_disc):
-            for m in range(self.num_mcmc):
-                self.d_vars.append(
-                    [var for var in t_vars \
-                     if 'd_h' in var.name and "_%04d_%04d" % (di, m) in var.name])
+        # get trainable vars
+        self.trainable_vars = tf.trainable_variables()
+        d_vars = self._get_vars(DISC)
+        e_vars = self._get_vars(ENC)
+        g_vars = self._get_vars(GEN)
+
+        # learning rates
+        self.d_learning_rate = tf.placeholder(tf.float32, shape=[])
+        self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
+        self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
+
+
         ### build disc losses and optimizers
+        self.opt_user_dict = {}
+        self.opt_adam_dict = {}
+        for m in [DISC, GEN, ENC]:
+            self.opt_user_dict[m] = []
+            self.opt_adam_dict[m] = []
+        
         self.d_losses_reals, self.d_losses_fakes = [], []
-        self.d_optims_reals, self.d_optims_fakes = [], []
-        self.d_optims_adam_reals, self.d_optims_adam_fakes = [], []
+
+        ### ALL_LOSSES
         for di, disc_params in enumerate(self.disc_param_list):
 
             d_prior_loss = self.prior(disc_params, DISC)
             d_losses_reals_ = []
-            for enc_params in self.enc_param_list:
+            for ei, enc_params in enumerate(self.enc_param_list):
                 encoded_inputs = self.encoder(self.inputs, enc_params)
                 d_probs, d_logits, _ = self.discriminator(
                     self.inputs, encoded_inputs, self.K, disc_params)
@@ -292,10 +325,10 @@ class BDCGAN(object):
                     d_loss_real_ += d_prior_loss + self.noise(disc_params, DISC)
                 d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
 
-            d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))    
+            d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))
             self.d_losses_reals.append(d_loss_reals)
- 
-            d_losses_fakes_ = []   
+
+            d_losses_fakes_ = []
             for gi, gen_params in enumerate(self.gen_param_list):
                 z = self.z[:, :, gi % self.num_gen]
                 d_probs_, d_logits_, _ = self.discriminator(
@@ -309,10 +342,17 @@ class BDCGAN(object):
                         labels=tf.constant(constant_labels)))
                 if not self.ml:
                     d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))        
-            
-            d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))        
+                d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))
+            d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))
             self.d_losses_fakes.append(d_loss_fakes)
+            
+            d_loss = tf.reduce_logsumexp(tf.concat(d_losses_reals_ + d_losses_fakes_, 0))
+            
+            d_opt_adam, d_opt_user = self._compile_optimizers(
+                DISC, lr=self.d_learning_rate, loss=d_loss, var_list=d_vars[di])
+            self.opt_user_dict[DISC].append(d_opt_user)
+            self.opt_adam_dict[DISC].append(d_opt_adam)
+            
             # TODO???
             """
             for d_loss_ in d_loss_reals:
@@ -327,32 +367,12 @@ class BDCGAN(object):
                                self.noise(disc_params, DISC)
                 d_losses.append(tf.reshape(d_loss_, [1]))
             """
-            d_opt = self._get_optimizer(self.d_learning_rate)
-            d_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.d_learning_rate, beta1=0.5)
-
-            self.d_optims_reals.append(
-                d_opt.minimize(d_loss_reals, var_list=self.d_vars[di]))
-            self.d_optims_adam_reals.append(
-                d_opt_adam.minimize(d_loss_reals, var_list=self.d_vars[di]))
-
-            self.d_optims_fakes.append(
-                d_opt.minimize(d_loss_fakes, var_list=self.d_vars[di]))
-            self.d_optims_adam_fakes.append(
-                d_opt_adam.minimize(d_loss_fakes, var_list=self.d_vars[di]))
 
         print("compiled discriminator losses\nd loss reals %r\nd_loss fakes %r" %
               (self.d_losses_reals, self.d_losses_fakes))
 
-        ### build encoder losses and optimizers
-        self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.e_losses, self.e_optims, self.e_optims_adam = [], [], []
-        self.e_vars = []
-        for ei in range(self.num_enc):
-            for m in range(self.num_mcmc):
-                self.e_vars.append(
-                    [var for var in t_vars \
-                     if "e_h" in var.name and "_%04d_%04d" % (ei, m) in var.name])     
+        ### compile e losses
+        self.e_losses =  []
         for ei, enc_params in enumerate(self.enc_param_list):
             ei_losses = []
             encoded_inputs = self.encoder(self.inputs, enc_params)
@@ -372,28 +392,18 @@ class BDCGAN(object):
                 ei_losses.append(tf.reshape(e_loss_, [1]))
             e_loss = tf.reduce_logsumexp(tf.concat(ei_losses, 0)) 
             self.e_losses.append(e_loss)
-            e_opt = self._get_optimizer(self.e_learning_rate)
-            self.e_optims.append(
-                e_opt.minimize(e_loss, var_list=self.e_vars[ei]))
-            e_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.e_learning_rate, beta1=0.5)
-            self.e_optims_adam.append(
-                e_opt_adam.minimize(e_loss, var_list=self.e_vars[ei]))
+
+            e_loss = self.e_losses[ei]
+            e_opt_adam, e_opt_user = self._compile_optimizers(
+                ENC, lr=self.e_learning_rate, loss=e_loss, var_list=e_vars[ei])
+            self.opt_adam_dict[ENC].append(e_opt_adam)
+            self.opt_user_dict[ENC].append(e_opt_user)
             
         print("compiled encoder losses", self.e_losses)
 
-        ### build generative losses and optimizers
-        self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.g_vars = []
-        for gi in range(self.num_gen):
-            for m in range(self.num_mcmc):
-                self.g_vars.append(
-                    [var for var in t_vars \
-                     if 'g_h' in var.name and "_%04d_%04d" % (gi, m) in var.name])
-
-        self.g_losses, self.g_optims, self.g_optims_adam = [], [], []
-        for gi, gen_params in enumerate(self.gen_param_list):
-
+        ### compile g losses
+        self.g_losses = []
+        for gi, gen_params in enumerate(self.gen_param_list): 
             gi_losses = []
             g_prior_loss = self.prior(gen_params, GEN)
             for disc_params in self.disc_param_list:
@@ -408,9 +418,18 @@ class BDCGAN(object):
                 if not self.ml:
                     g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
                 gi_losses.append(tf.reshape(g_disc_loss, [1]))
-                print("NOT using huber loss")
-                # Also why???
-                """
+
+            g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
+            self.g_losses.append(g_loss)
+
+
+            g_opt_adam, g_opt_user = self._compile_optimizers(
+                GEN, lr=self.g_learning_rate, loss=g_loss, var_list=g_vars[gi])
+            self.opt_adam_dict[GEN].append(g_opt_adam)
+            self.opt_user_dict[GEN].append(g_opt_user)
+            print("NOT using huber loss")
+            # Also why???
+            """
                 for enc_params in self.enc_param_list:
                     encoded_inputs = self.encoder(self.inputs, enc_params)
                     _, _, d_features_real = self.discriminator(
@@ -422,16 +441,7 @@ class BDCGAN(object):
                     if not self.ml:
                         g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
                     gi_losses.append(tf.reshape(g_loss_, [1]))
-                """         
-            g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
-            self.g_losses.append(g_loss)
-            g_opt = self._get_optimizer(self.g_learning_rate)
-            self.g_optims.append(g_opt.minimize(g_loss, var_list=self.g_vars[gi]))
-            g_opt_adam = tf.train.AdamOptimizer(
-                learning_rate=self.g_learning_rate, beta1=0.5)
-            self.g_optims_adam.append(
-                g_opt_adam.minimize(g_loss, var_list=self.g_vars[gi]))
-
+            """         
         print("compiled generator losses", self.g_losses)      
 
         ### build samplers

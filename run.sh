@@ -22,14 +22,13 @@
 #SBATCH -n 2
 
 stdbuf -o0 ./run_bgan.py \
-        --data_path $DATADIR/cifar10 \
-        --dataset cifar \
+        --data_path $DATADIR/mnist \
+        --dataset mnist \
         --out_dir exp_results \
         --gf_dim 64 --df_dim 64 \
-        --disc_real_lr 0.00005 --enc_lr 0.0001 --d_real_update_threshold 0.5 \
-        --disc_fake_lr 0.001  --gen_lr 0.005 --d_fake_update_threshold 0.2 \
+        --disc_lr 0.001 --enc_lr 0.005 --gen_lr 0.005 \
         --num_gen 2 --num_enc 2 --num_disc 1 --num_mcmc 1 \
-        --train_iter 5000 --n_save 500 --save_samples --evaluate_latent \
+        --train_iter 2000 --n_save 500 --save_samples --evaluate_latent \
         --prior_std 10 
 #--ml 
 #       --optimizer sgd 

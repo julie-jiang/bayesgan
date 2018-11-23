@@ -254,6 +254,8 @@ class BDCGAN_Semi(object):
         self.d_semi_learning_rate = tf.placeholder(tf.float32, shape=[])
         
         # compile all disciminative weights
+p
+p
         t_vars = tf.trainable_variables()
         self.d_vars = []
         for di in range(self.num_disc):
