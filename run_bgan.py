@@ -59,7 +59,6 @@ def train_dcgan(dataset, args, dcgan, sess):
         "discs": args.disc_lr,
         "enc": args.enc_lr}
     learning_rates = {}
-
     print("USING RAND NORMAL DIST")
     for train_iter in range(num_train_iter):
 
@@ -82,8 +81,8 @@ def train_dcgan(dataset, args, dcgan, sess):
                        dcgan.d_learning_rate: learning_rates["disc"]}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
-        
-        sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
+        if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold * 2: 
+            sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
 
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
@@ -113,7 +112,6 @@ def train_dcgan(dataset, args, dcgan, sess):
         running_losses["e_losses"][train_iter] = np.mean(e_losses)
         running_losses["d_real_losses"][train_iter] = np.mean(d_losses_reals)
         running_losses["d_fake_losses"][train_iter] = np.mean(d_losses_fakes)
-        
         if train_iter + 1 == num_train_iter or \
            (train_iter > 0 and train_iter  % args.n_save == 0):
 
@@ -152,9 +150,10 @@ def train_dcgan(dataset, args, dcgan, sess):
                 for (gi, ei), recon in dcgan.reconstructers.items():
                     recon_imgs = sess.run(recon, 
                                           feed_dict={dcgan.inputs: image_batch})
+                    filename = "B_DCGAN_RECON_g%i_e%i" % (gi, ei)
                     print_images(
                         recon_imgs,
-                        "B_DCGAN_RECON_g%i_e%i" % (gi, ei),
+                        filename,
                         train_iter,
                         directory=args.out_dir)    
                 print_images(
@@ -171,12 +170,11 @@ def train_dcgan(dataset, args, dcgan, sess):
                 all_latent_encodings = evaluate_latent(sess, dcgan, args, dataset)
                 for ei, latent_encodings in enumerate(all_latent_encodings):
                     for r in range(2):
+                        filename = "latent_encodings_e%d_r%d_%d.png" \
+                                   % (ei, r, train_iter)
                         plot_latent_encodings(
-                            latent_encodings, 
-                            savename=os.path.join(
-                                args.out_dir, 
-                                "latent_encodings_e%d_r%d_%d.png" % (ei, r, train_iter)))
-                    
+                            latent_encodings, savename=os.path.join(args.out_dir, filename))
+                   
     losses_file = os.path.join(args.out_dir, "running_losses.npz")          
     np.savez(losses_file, **running_losses)
     print("Saved running losses to", losses_file)
@@ -185,7 +183,7 @@ def train_dcgan(dataset, args, dcgan, sess):
                 **running_losses)
     print("done")
 
-def evaluate_latent(sess, dcgan, args, dataset):
+def evaluate_latent(sess, dcgan, args, dataset, save_latent=False):
     all_latent_encodings = []
     for ei, encoder in enumerate(dcgan.encoders):
         latent_encodings = np.empty(
@@ -196,9 +194,10 @@ def evaluate_latent(sess, dcgan, args, dataset):
                 encoder, 
                 feed_dict={dcgan.inputs: inputs_c})
             latent_encodings[c] = encodings_c
-        savepath = os.path.join(args.out_dir, "latent_encodings_%d.npy" % ei)
-        np.save(savepath, latent_encodings)
-        print("Latent encodings for encoder %d saved to %s" % (ei, savepath))
+        if save_latent:
+            savepath = os.path.join(args.out_dir, "latent_encodings_%d.npy" % ei)
+            np.save(savepath, latent_encodings)
+            print("Latent encodings for encoder %d saved to %s" % (ei, savepath))
         all_latent_encodings.append(latent_encodings)
     return all_latent_encodings 
         

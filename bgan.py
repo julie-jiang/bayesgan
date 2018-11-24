@@ -166,11 +166,11 @@ class BDCGAN(object):
              ("d_h_enc_lin_b", (num_dfs[-1],)),
              ("d_h0_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
              ("d_h0_lin_b", (num_dfs[-1],)),
-             #("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
-             #("d_h1_lin_b", (num_dfs[-1],)),
+             ("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
+             ("d_h1_lin_b", (num_dfs[-1],)),
              ("d_h_out_lin_W", (num_dfs[-1], self.K)),
              ("d_h_out_lin_b", (self.K,))]))
-        print("ONLY USING ONE DISC LIN LAYER") 
+        print("USING TWO DISC LIN LAYER") 
         self.enc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
         num_efs = [self.c_dim] + num_efs
@@ -296,7 +296,7 @@ class BDCGAN(object):
         self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
 
 
-        ### build disc losses and optimizers
+        ### buil disc losses and optimizers
         self.opt_user_dict = {}
         self.opt_adam_dict = {}
         for m in [DISC, GEN, ENC]:
@@ -504,7 +504,7 @@ class BDCGAN(object):
 
             h = tf.reshape(h, [self.batch_size, -1])
             
-            for layer in range(1): #TODO           
+            for layer in range(2): #TODO           
                 h = lrelu(linear(
                     h,
                     self.df_dim * 4, 
