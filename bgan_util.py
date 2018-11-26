@@ -131,6 +131,9 @@ class MnistDataset():
         self.num_classes = 10
         self.dataset_size = self.mnist.train.images.shape[0]
         
+        self.num_train = self.dataset_size
+        self.num_test = self.mnist.test.images.shape[1]
+        
     def next_batch(self, batch_size, class_id=None):
         
         if class_id is None:
@@ -169,8 +172,12 @@ class MnistDataset():
         test_labels = self.mnist.test.labels
         return test_images, test_labels
 
-
-        
+    def get_train_set(self):
+        train_imgs = self.mnist.train.images
+        train_images = np.array([(train_imgs[n]*2. - 1.).reshape((28, 28, 1)) 
+                                 for n in range(train_imgs.shape[0])])
+        train_labels = self.mnist.train.labels
+        return train_images, train_labels 
         
 class CelebDataset():
         
@@ -484,4 +491,9 @@ class Cifar10():
         rand_idx = np.random.choice(range(self.test_imgs.shape[0]),
                                     size=(batch_size,), replace=False)
         return self.test_imgs[rand_idx], self.test_labels[rand_idx]
+    
+    def get_test_set(self):
+        return self.test_imgs, self.test_labels
+    def get_train_set(self):
+        return self.imgs, self.labels
     

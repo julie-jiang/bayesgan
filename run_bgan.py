@@ -19,6 +19,9 @@ from bgan_util import print_images, MnistDataset, CelebDataset, Cifar10, SVHN, I
 from bgan import BDCGAN
 from gan_plot import plot_losses, plot_latent_encodings
 
+from sklearn.neighbors import KNeighborsClassifier as KNN
+from sklearn.metrics import accuracy_score
+
 def get_sess():
     if tf.get_default_session() is None:
         print("Creating new sess")
@@ -59,7 +62,8 @@ def train_dcgan(dataset, args, dcgan, sess):
         "discs": args.disc_lr,
         "enc": args.enc_lr}
     learning_rates = {}
-    print("USING RAND NORMAL DIST")
+    #print("USING RAND NORMAL DIST")
+    print("NOT USING UPDATE THRESHOLD")
     for train_iter in range(num_train_iter):
 
         if train_iter == 5000:
@@ -72,8 +76,8 @@ def train_dcgan(dataset, args, dcgan, sess):
 
         image_batch, _ = dataset.next_batch(args.batch_size, class_id=None)       
         ### compute disc losses
-        batch_z = np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
-        #np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
+        batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
+        #np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
 
         # TODO this is really ugly
         d_feed_dict = {dcgan.inputs: image_batch,
@@ -81,8 +85,8 @@ def train_dcgan(dataset, args, dcgan, sess):
                        dcgan.d_learning_rate: learning_rates["disc"]}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
-        if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold * 2: 
-            sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
+        #if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold * 2: 
+        sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
 
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
@@ -159,13 +163,6 @@ def train_dcgan(dataset, args, dcgan, sess):
                 print_images(
                     image_batch, "RAW", train_iter, directory=args.out_dir)
                 
-            if args.save_weights:
-                save_path = saver.save(
-                    sess, 
-                    os.path.join(args.out_dir, "model.ckpt"),
-                    global_step=train_iter)
-                print("Model saved to %s" % save_path) 
-    
             if args.evaluate_latent: 
                 all_latent_encodings = evaluate_latent(sess, dcgan, args, dataset)
                 for ei, latent_encodings in enumerate(all_latent_encodings):
@@ -174,14 +171,78 @@ def train_dcgan(dataset, args, dcgan, sess):
                                    % (ei, r, train_iter)
                         plot_latent_encodings(
                             latent_encodings, savename=os.path.join(args.out_dir, filename))
-                   
+    
+
+    save_path = saver.save(
+        sess, 
+        os.path.join(args.out_dir, "model.ckpt"))
+    print("Model saved to %s" % save_path) 
+
     losses_file = os.path.join(args.out_dir, "running_losses.npz")          
     np.savez(losses_file, **running_losses)
     print("Saved running losses to", losses_file)
     
     plot_losses(savename=os.path.join(args.out_dir, "losses_plot.png"), 
                 **running_losses)
+    
+    results = evaluate_classification(sess, dcgan, args, dataset)
+    with open(os.path.join(args.out_dir, "classification.json")) as fp:
+        json.dump(results, fp)
     print("done")
+
+def evaluate_classification(sess, dcgan, args, dataset):
+    def truncate_size(data):
+        return data[:len(data) - len(data) % args.batch_size]
+    results = {}
+    Xtrain, ytrain = dataset.get_train_set()
+    Xtest, ytest = dataset.get_test_set()
+    Xtrain = truncate_size(Xtrain)
+    ytrain = truncate_size(ytrain)
+    Xtest = truncate_size(Xtest)
+    ytest = truncate_size(ytest)
+    for ei, encoder in enumerate(dcgan.encoders):
+        Xtrain_feat = []
+        
+        for i in range(0, len(Xtrain), args.batch_size):
+            Xbatch = Xtrain[i:i + args.batch_size]
+            Xtrain_feat.extend(sess.run(encoder, feed_dict={dcgan.inputs: Xbatch}))
+        Xtest_feat = []
+        
+        for i in range(0, len(Xtest), args.batch_size):
+            Xbatch = Xtest[i:i + args.batch_size]
+            Xtest_feat.extend(sess.run(encoder, feed_dict={dcgan.inputs: Xbatch}))
+        Xtrain_feat, Xtest_feat = np.array(Xtrain_feat), np.array(Xtest_feat)
+        acc = oneNN_classification(Xtrain_feat, ytrain, Xtest_feat, ytest)
+        results["enc_%d" % ei] = acc
+        print("Encoder %d 1NN classification accuracy: %f" % (ei, acc))
+    
+    for di, discriminator in enumerate(dcgan.discriminators):
+
+        Xtrain_feat = []
+        for i in range(0, len(Xtrain), args.batch_size):
+            Xbatch = Xtrain[i:i + args.batch_size]
+            Xtrain_feat.extend(sess.run(discriminator, feed_dict={dcgan.inputs: Xbatch}))
+        Xtest_feat = []
+
+        for i in range(0, len(Xtest), args.batch_size):
+            Xbatch = Xtest[i:i + args.batch_size]
+            Xtest_feat.extend(sess.run(discriminator, feed_dict={dcgan.inputs: Xbatch}))
+        Xtrain_feat = np.array(Xtrain_feat)
+        Xtest_feat = np.array(Xtest_feat)
+        acc = oneNN_classification(Xtrain_feat, ytrain, Xtest_feat, ytest)
+        results["disc_%d" % di] = acc
+        print("Discriminator %d 1NN classification accuracy: %f" % (di, acc))
+    
+    return results
+        
+
+def oneNN_classification(Xtrain_feat, ytrain, Xtest_feat, ytest):
+    clf = KNN(n_neighbors=1)
+    clf.fit(Xtrain_feat, ytrain)
+    ypred = clf.predict(Xtest_feat)
+
+    acc = accuracy_score(ytest, ypred)
+    return acc
 
 def evaluate_latent(sess, dcgan, args, dataset, save_latent=False):
     all_latent_encodings = []

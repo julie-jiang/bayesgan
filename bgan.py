@@ -411,6 +411,7 @@ class BDCGAN(object):
                 d_probs_, d_logits_, d_features_fake = self.discriminator(
                     self.generator(z, gen_params), z, self.K, disc_params)
                 # class label indicating that this fake is real
+                constant_labels = np.zeros((self.batch_size, self.K))
                 constant_labels[:, REAL_LABELS] = 1.0
                 g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                         logits=d_logits_,
@@ -463,7 +464,18 @@ class BDCGAN(object):
         for enc_params in self.enc_param_list:
             self.encoders.append(
                 self.encoder(self.inputs, enc_params))    
+       
+        self.discriminators = []
+        for disc_param in self.disc_param_list:
+            for enc_param in self.enc_param_list:
+                _, d_logits, _ = self.discriminator(
+                    self.inputs, 
+                    self.encoder(self.inputs, enc_params),
+                    self.K,
+                    disc_params))
+                self.discriminators.append(d_logits)
         
+                    
 
     def discriminator(self, image, encoded_image, K, disc_params, train=True):
 
@@ -493,7 +505,7 @@ class BDCGAN(object):
                            d_w=self.disc_strides[layer],
                            w=disc_params["d_h%i_W" % layer], 
                            biases=disc_params["d_h%i_b" % layer]), 
-                    train=train))
+                 train=train))
             
             h_enc = lrelu(linear(
                 encoded_image,
@@ -557,12 +569,12 @@ class BDCGAN(object):
                 matrix=enc_params["e_h_end_lin_W"],
                 bias=enc_params["e_h_end_lin_b"]))
             
-            h_out = lrelu(linear(
+            h_out = linear(
                 h_end,
                 self.z_dim,
                 "e_h_out_lin",
                 matrix=enc_params["e_h_out_lin_W"],
-                bias=enc_params["e_h_out_lin_b"]))
+                bias=enc_params["e_h_out_lin_b"])
             
             return h_out
                         
