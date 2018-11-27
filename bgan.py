@@ -311,6 +311,7 @@ class BDCGAN(object):
 
         d_prior_loss = self.prior(disc_params, DISC)
         d_losses_reals_ = []
+        d_acc_reals_ = []
         
         encoded_inputs = self.encoder(self.inputs, enc_params)
         d_probs, d_logits, _ = self.discriminator(
@@ -322,14 +323,17 @@ class BDCGAN(object):
             tf.nn.softmax_cross_entropy_with_logits(
                 logits=d_logits,
                 labels=tf.constant(constant_labels)))
+        d_acc_real = tf.metrics.accuracy(constant_labels, d_probs)
         if not self.ml:
             d_loss_real_ = d_loss_real + d_prior_loss + self.noise(disc_params, DISC)
         d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
+        d_acc_reals_.append(d_acc_real)
 
         d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))
-        self.d_losses_reals.append(d_loss_reals)
+        d_losses_reals.append(d_loss_reals)
 
         d_losses_fakes_ = []
+        d_acc_fakes_ = []
         for gi, gen_params in enumerate(self.gen_param_list):
             z = self.z[:, :, gi % self.num_gen]
             d_probs_, d_logits_, _ = self.discriminator(
@@ -342,9 +346,11 @@ class BDCGAN(object):
                     logits=d_logits_,
                     labels=tf.constant(constant_labels)))
             d_loss_fake_ /= self.num_gen
+            d_acc_fake = tf.metrics.accuracy(constant_labels, d_probs_)
             if not self.ml:
                 d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
             d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))
+            d_acc_fakes_.append(d_acc_fake)
         d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))
         self.d_losses_fakes.append(d_loss_fakes)
             
@@ -355,6 +361,11 @@ class BDCGAN(object):
         self.opt_user_dict[DISC].append(d_opt_user)
         self.opt_adam_dict[DISC].append(d_opt_adam)
             
+        
+        self.d_acc_reals = d_acc_reals_
+        self.d_acc_fakes = d_acc_fakes_
+
+
             # TODO???
         """
             for d_loss_ in d_loss_reals:
