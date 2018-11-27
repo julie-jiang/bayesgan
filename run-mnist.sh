@@ -27,9 +27,9 @@ stdbuf -o0 ./run_bgan.py \
         --out_dir exp_results \
         --gf_dim 64 --df_dim 64 \
         --disc_lr 0.0001 --enc_lr 0.0005 --gen_lr 0.0005 \
-        --num_gen 4 --num_enc 4 --num_disc 1 --num_mcmc 1 \
+        --num_gen 4 --num_enc 1 --num_disc 1 --num_mcmc 1 \
         --train_iter 5000 \
-        --n_save 5000 --save_samples --evaluate_latent \
+        --n_save 500 --save_samples --evaluate_latent \
 #        --prior_std 10 
 #--ml 
 #       --optimizer sgd 

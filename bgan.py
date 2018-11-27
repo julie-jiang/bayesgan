@@ -162,15 +162,17 @@ class BDCGAN(object):
             ks = kernel_sizer(ks, disc_strides[layer])
             self.disc_kernel_sizes.append(ks)
         self.disc_weight_dims.update(OrderedDict(
-            [("d_h_enc_lin_W", (self.z_dim, num_dfs[-1])),
-             ("d_h_enc_lin_b", (num_dfs[-1],)),
-             ("d_h0_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
-             ("d_h0_lin_b", (num_dfs[-1],)),
-             ("d_h1_lin_W", (num_dfs[-1], num_dfs[-1])),
-             ("d_h1_lin_b", (num_dfs[-1],)),
+            [("d_h0_enc_lin_W", (self.z_dim, num_dfs[-1] * 4)),
+             ("d_h0_enc_lin_b", (num_dfs[-1] * 4)),
+             ("d_h1_enc_lin_W", (num_dfs[-1] * 4, num_dfs[-1] * 2)),
+             ("d_h1_enc_lin_b", (num_dfs[-1] * 2,)),
+             ("d_h2_enc_lin_W", (num_dfs[-1] * 2, num_dfs[-1])),
+             ("d_h2_enc_lin_b", (num_dfs[-1],)),
+             ("d_h_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
+             ("d_h_lin_b", (num_dfs[-1],)),
              ("d_h_out_lin_W", (num_dfs[-1], self.K)),
              ("d_h_out_lin_b", (self.K,))]))
-        print("USING TWO DISC LIN LAYER") 
+
         self.enc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
         num_efs = [self.c_dim] + num_efs
@@ -454,11 +456,16 @@ class BDCGAN(object):
                 self.generator(self.z_sampler, gen_params))
         
         self.reconstructers = OrderedDict({})
+        recon_losses = []
         for gi, gen_params in enumerate(self.gen_param_list):
             for ei, enc_params in enumerate(self.enc_param_list):
-                self.reconstructers[(gi, ei)] = self.generator(
+                recon = self.generator(
                     self.encoder(self.inputs, enc_params), 
                     gen_params)
+                self.reconstructers[(gi, ei)] = recon
+                recon_losses.append(tf.losses.mean_squared_error(self.inputs, recon))
+        self.recon_loss = tf.reduce_mean(recon_losses)
+        
         
         self.encoders = []
         for enc_params in self.enc_param_list:
@@ -472,7 +479,7 @@ class BDCGAN(object):
                     self.inputs, 
                     self.encoder(self.inputs, enc_params),
                     self.K,
-                    disc_params))
+                    disc_params)
                 self.discriminators.append(d_logits)
         
                     
@@ -507,26 +514,25 @@ class BDCGAN(object):
                            biases=disc_params["d_h%i_b" % layer]), 
                  train=train))
             
-            h_enc = lrelu(linear(
-                encoded_image,
-                self.df_dim * 4, # not needed, and not correct anways
-                "d_h_enc_lin",
-                matrix=disc_params["d_h_enc_lin_W"],
-                bias=disc_params["d_h_enc_lin_b"]))
+            h = lrelu(linear(
+                tf.reshape(h, [self.batch_size, -1]),
+                self.df_dim * 4,
+                "d_h_lin",
+                matrix=disc_params["d_h_lin_W"],
+                bias=disc_params["d_h_lin_b"]))
 
-            h = tf.reshape(h, [self.batch_size, -1])
+            h_enc = encoded_image
             
-            for layer in range(2): #TODO           
-                h = lrelu(linear(
-                    h,
-                    self.df_dim * 4, 
-                    "d_h%d_lin" % layer,
-                    matrix=disc_params["d_h%d_lin_W" % layer], 
-                    bias=disc_params["d_h%d_lin_b" % layer])) # for feature norm
-                h += h_enc 
-
+            for layer in range(3): #TODO           
+                h_enc = lrelu(linear(
+                    h_enc,
+                    self.disc_weight_dims["d_h%d_enc_lin_b" % layer], 
+                    "d_h%d_enc_lin" % layer,
+                    matrix=disc_params["d_h%d_enc_lin_W" % layer], 
+                    bias=disc_params["d_h%d_enc_lin_b" % layer])) 
+            
             h_out = linear(
-                h, 
+                h + h_enc, 
                 K, 
                 'd_h_out_lin',
                 matrix=disc_params["d_h_out_lin_W"], 
@@ -576,7 +582,7 @@ class BDCGAN(object):
                 matrix=enc_params["e_h_out_lin_W"],
                 bias=enc_params["e_h_out_lin_b"])
             
-            return h_out
+            return tf.nn.tanh(h_out)
                         
 
     def generator(self, z, gen_params, train=True):

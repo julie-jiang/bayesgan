@@ -24,8 +24,8 @@ class AttributeDict(dict):
         self[attr] = value
     def __hash__(self):
         return hash(tuple(sorted(self.items())))
-        
-        
+
+
 def print_images(sampled_images, label, index, directory, save_all_samples=False):
     import matplotlib as mpl
     mpl.use('Agg') # for server side
@@ -37,25 +37,17 @@ def print_images(sampled_images, label, index, directory, save_all_samples=False
             img_out[:, :, i] = 255.* ((img[:, :, i] + 1.) / 2.0)
         img_out = img_out.astype(np.uint8)
         return img_out
-        
 
-    if type(sampled_images) == np.ndarray:
-        N, h, w, cdim = sampled_images.shape
-        idxs = np.random.choice(np.arange(N), size=(5,5), replace=False)
-    else:
-        sampled_imgs, sampled_probs = sampled_images
-        sampled_images = sampled_imgs[sampled_probs.argsort()[::-1]]
-        idxs = np.arange(5*5).reshape((5,5))
-        N, h, w, cdim = sampled_images.shape
+    N, h, w, cdim = sampled_images.shape
 
         
     fig, axarr = plt.subplots(5, 5)
     for i in range(5):
         for j in range(5):
             if cdim == 1:
-                axarr[i, j].imshow(unnormalize(sampled_images[idxs[i, j]], cdim)[:, :, 0], cmap="gray")
+                axarr[i, j].imshow(unnormalize(sampled_images[i * 5 + j], cdim)[:, :, 0], cmap="gray")
             else:
-                axarr[i, j].imshow(unnormalize(sampled_images[idxs[i, j]], cdim))
+                axarr[i, j].imshow(unnormalize(sampled_images[i * 5 + j], cdim))
             axarr[i, j].axis('off')
             axarr[i, j].set_xticklabels([])
             axarr[i, j].set_yticklabels([])

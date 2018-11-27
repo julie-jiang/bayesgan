@@ -54,7 +54,7 @@ def train_dcgan(dataset, args, dcgan, sess):
     saver = tf.train.Saver() 
     running_losses = {}
     
-    for m in ["g", "e", "d_real", "d_fake"]:
+    for m in ["g", "e", "d_real", "d_fake", "recon"]:
         running_losses["%s_losses" % m] = np.empty(num_train_iter)
     base_learning_rates = {
         "gen": args.gen_lr,
@@ -101,21 +101,20 @@ def train_dcgan(dataset, args, dcgan, sess):
                                           dcgan.inputs: image_batch,
                                           dcgan.g_learning_rate: learning_rates["gen"]})
         g_losses = gen_info[len(optimizer_dict["gen"]):]
-        # TODO: d losses too small????
-        """ 
-        raw_d_losses, raw_e_losses, raw_g_losses = sess.run(
-            [dcgan.raw_d_losses, dcgan.raw_e_losses, dcgan.raw_g_losses],
-            feed_dict={dcgan.z: batch_z, dcgan.inputs: image_batch})
-        """ 
+        
+        recon_loss  = sess.run(dcgan.recon_loss, feed_dict={dcgan.inputs: image_batch})
+
         print("Iter %i" % train_iter)
         print_losses("Disc reals", d_losses_reals)
         print_losses("Disc fakes", d_losses_fakes)
         print_losses("Enc", e_losses)
         print_losses("Gen", g_losses)
+        print("Recon", recon_loss)        
         running_losses["g_losses"][train_iter] = np.mean(g_losses)
         running_losses["e_losses"][train_iter] = np.mean(e_losses)
         running_losses["d_real_losses"][train_iter] = np.mean(d_losses_reals)
         running_losses["d_fake_losses"][train_iter] = np.mean(d_losses_fakes)
+        running_losses["recon_losses"][train_iter] = recon_loss
         if train_iter + 1 == num_train_iter or \
            (train_iter > 0 and train_iter  % args.n_save == 0):
 
