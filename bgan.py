@@ -28,8 +28,6 @@ class BDCGAN(object):
                  prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4,
                  alpha=0.01, optimizer='adam', wasserstein=False, 
                  ml=False, J_d=1, J_e=1):
-        assert J_e == J
-
         assert len(x_dim) == 3, "invalid image dims"
         c_dim = x_dim[2]
         self.is_grayscale = (c_dim == 1)
@@ -162,11 +160,11 @@ class BDCGAN(object):
             ks = kernel_sizer(ks, disc_strides[layer])
             self.disc_kernel_sizes.append(ks)
         self.disc_weight_dims.update(OrderedDict(
-            [("d_h0_enc_lin_W", (self.z_dim, num_dfs[-1] * 4)),
-             ("d_h0_enc_lin_b", (num_dfs[-1] * 4)),
-             ("d_h1_enc_lin_W", (num_dfs[-1] * 4, num_dfs[-1] * 2)),
-             ("d_h1_enc_lin_b", (num_dfs[-1] * 2,)),
-             ("d_h2_enc_lin_W", (num_dfs[-1] * 2, num_dfs[-1])),
+            [("d_h0_enc_lin_W", (self.z_dim, num_dfs[-1])),
+             ("d_h0_enc_lin_b", (num_dfs[-1])),
+             ("d_h1_enc_lin_W", (num_dfs[-1], num_dfs[-1])),
+             ("d_h1_enc_lin_b", (num_dfs[-1],)),
+             ("d_h2_enc_lin_W", (num_dfs[-1], num_dfs[-1])),
              ("d_h2_enc_lin_b", (num_dfs[-1],)),
              ("d_h_lin_W", (num_dfs[-1] * s_h * s_w, num_dfs[-1])),
              ("d_h_lin_b", (num_dfs[-1],)),
@@ -308,55 +306,57 @@ class BDCGAN(object):
         self.d_losses_reals, self.d_losses_fakes = [], []
 
         ### ALL_LOSSES
-        for di, disc_params in enumerate(self.disc_param_list):
+        disc_params = self.disc_param_list[0]
+        enc_params = self.enc_param_list[0]
 
-            d_prior_loss = self.prior(disc_params, DISC)
-            d_losses_reals_ = []
-            for ei, enc_params in enumerate(self.enc_param_list):
-                encoded_inputs = self.encoder(self.inputs, enc_params)
-                d_probs, d_logits, _ = self.discriminator(
-                    self.inputs, encoded_inputs, self.K, disc_params)
+        d_prior_loss = self.prior(disc_params, DISC)
+        d_losses_reals_ = []
+        
+        encoded_inputs = self.encoder(self.inputs, enc_params)
+        d_probs, d_logits, _ = self.discriminator(
+               self.inputs, encoded_inputs, self.K, disc_params)
 
-                constant_labels = np.zeros((self.batch_size, self.K))
-                constant_labels[:, REAL_LABELS] = 1.0  # real
-                d_loss_real_ = tf.reduce_mean(
-                    tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    d_loss_real_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
+        constant_labels = np.zeros((self.batch_size, self.K))
+        constant_labels[:, REAL_LABELS] = 1.0  # real
+        d_loss_real = tf.reduce_mean(
+            tf.nn.softmax_cross_entropy_with_logits(
+                logits=d_logits,
+                labels=tf.constant(constant_labels)))
+        if not self.ml:
+            d_loss_real_ = d_loss_real + d_prior_loss + self.noise(disc_params, DISC)
+        d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
 
-            d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))
-            self.d_losses_reals.append(d_loss_reals)
+        d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))
+        self.d_losses_reals.append(d_loss_reals)
 
-            d_losses_fakes_ = []
-            for gi, gen_params in enumerate(self.gen_param_list):
-                z = self.z[:, :, gi % self.num_gen]
-                d_probs_, d_logits_, _ = self.discriminator(
-                    self.generator(z, gen_params), z, self.K, disc_params)
-                constant_labels = np.zeros((self.batch_size, self.K))
-                # class label indicating it came from generator, aka fake
-                constant_labels[:, FAKE_LABELS] = 1.0
-                d_loss_fake_ = tf.reduce_mean(
-                    tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits_,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
-                d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))
-            d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))
-            self.d_losses_fakes.append(d_loss_fakes)
+        d_losses_fakes_ = []
+        for gi, gen_params in enumerate(self.gen_param_list):
+            z = self.z[:, :, gi % self.num_gen]
+            d_probs_, d_logits_, _ = self.discriminator(
+               self.generator(z, gen_params), z, self.K, disc_params)
+            constant_labels = np.zeros((self.batch_size, self.K))
+            # class label indicating it came from generator, aka fake
+            constant_labels[:, FAKE_LABELS] = 1.0
+            d_loss_fake_ = tf.reduce_mean(
+                tf.nn.softmax_cross_entropy_with_logits(
+                    logits=d_logits_,
+                    labels=tf.constant(constant_labels)))
+            d_loss_fake_ /= self.num_gen
+            if not self.ml:
+                d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
+            d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))
+        d_loss_fakes = tf.reduce_logsumexp(tf.concat(d_losses_fakes_, 0))
+        self.d_losses_fakes.append(d_loss_fakes)
             
-            d_loss = tf.reduce_logsumexp(tf.concat(d_losses_reals_ + d_losses_fakes_, 0))
-            
-            d_opt_adam, d_opt_user = self._compile_optimizers(
-                DISC, lr=self.d_learning_rate, loss=d_loss, var_list=d_vars[di])
-            self.opt_user_dict[DISC].append(d_opt_user)
-            self.opt_adam_dict[DISC].append(d_opt_adam)
+        d_loss = tf.reduce_logsumexp(tf.concat(d_losses_reals_ + d_losses_fakes_, 0))
+         
+        d_opt_adam, d_opt_user = self._compile_optimizers(
+            DISC, lr=self.d_learning_rate, loss=d_loss, var_list=d_vars[0])
+        self.opt_user_dict[DISC].append(d_opt_user)
+        self.opt_adam_dict[DISC].append(d_opt_adam)
             
             # TODO???
-            """
+        """
             for d_loss_ in d_loss_reals:
                 if not self.ml:
                     d_loss_ += d_prior_loss + self.noise(disc_params, DISC)
@@ -368,38 +368,36 @@ class BDCGAN(object):
                     d_loss_ += d_prior_loss + \
                                self.noise(disc_params, DISC)
                 d_losses.append(tf.reshape(d_loss_, [1]))
-            """
+        """
 
         print("compiled discriminator losses\nd loss reals %r\nd_loss fakes %r" %
               (self.d_losses_reals, self.d_losses_fakes))
 
         ### compile e losses
+        enc_params = self.enc_param_list[0]
         self.e_losses =  []
-        for ei, enc_params in enumerate(self.enc_param_list):
-            ei_losses = []
-            encoded_inputs = self.encoder(self.inputs, enc_params)
-            e_prior_loss = self.prior(enc_params, ENC)
-            for disc_params in self.disc_param_list:
-                d_probs, d_logits, d_features = self.discriminator(
-                    self.inputs, encoded_inputs, self.K, disc_params)
-                constant_labels = np.zeros((self.batch_size, self.K)) 
-                constant_labels[:, FAKE_LABELS] = 1.0 # want to make real input appear fake
-                
-                e_loss_ = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    e_loss_ += e_prior_loss + self.noise(enc_params, ENC)
-                
-                ei_losses.append(tf.reshape(e_loss_, [1]))
-            e_loss = tf.reduce_logsumexp(tf.concat(ei_losses, 0)) 
-            self.e_losses.append(e_loss)
-
-            e_loss = self.e_losses[ei]
-            e_opt_adam, e_opt_user = self._compile_optimizers(
-                ENC, lr=self.e_learning_rate, loss=e_loss, var_list=e_vars[ei])
-            self.opt_adam_dict[ENC].append(e_opt_adam)
-            self.opt_user_dict[ENC].append(e_opt_user)
+        ei_losses = []
+        encoded_inputs = self.encoder(self.inputs, enc_params)
+        e_prior_loss = self.prior(enc_params, ENC)
+        d_probs, d_logits, d_features = self.discriminator(
+            self.inputs, encoded_inputs, self.K, disc_params)
+        constant_labels = np.zeros((self.batch_size, self.K)) 
+        constant_labels[:, FAKE_LABELS] = 1.0 # want to make real input appear fake
+               
+        e_loss_ = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+                logits=d_logits,
+                labels=tf.constant(constant_labels)))
+        if not self.ml:
+            e_loss_ += e_prior_loss + self.noise(enc_params, ENC)
+            
+        ei_losses.append(tf.reshape(e_loss_, [1]))
+        e_loss = tf.reduce_logsumexp(tf.concat(ei_losses, 0)) 
+        self.e_losses.append(e_loss)
+        e_loss = self.e_losses[0]
+        e_opt_adam, e_opt_user = self._compile_optimizers(
+            ENC, lr=self.e_learning_rate, loss=e_loss, var_list=e_vars[0])
+        self.opt_adam_dict[ENC].append(e_opt_adam)
+        self.opt_user_dict[ENC].append(e_opt_user)
             
         print("compiled encoder losses", self.e_losses)
 
@@ -408,19 +406,18 @@ class BDCGAN(object):
         for gi, gen_params in enumerate(self.gen_param_list): 
             gi_losses = []
             g_prior_loss = self.prior(gen_params, GEN)
-            for disc_params in self.disc_param_list:
-                z = self.z[:, :, gi % self.num_gen]
-                d_probs_, d_logits_, d_features_fake = self.discriminator(
-                    self.generator(z, gen_params), z, self.K, disc_params)
-                # class label indicating that this fake is real
-                constant_labels = np.zeros((self.batch_size, self.K))
-                constant_labels[:, REAL_LABELS] = 1.0
-                g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-                        logits=d_logits_,
-                        labels=tf.constant(constant_labels)))
-                if not self.ml:
-                    g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
-                gi_losses.append(tf.reshape(g_disc_loss, [1]))
+            z = self.z[:, :, gi % self.num_gen]
+            d_probs_, d_logits_, d_features_fake = self.discriminator(
+                self.generator(z, gen_params), z, self.K, disc_params)
+            # class label indicating that this fake is real
+            constant_labels = np.zeros((self.batch_size, self.K))
+            constant_labels[:, REAL_LABELS] = 1.0
+            g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+                   logits=d_logits_,
+                   labels=tf.constant(constant_labels)))
+            if not self.ml:
+                g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
+            gi_losses.append(tf.reshape(g_disc_loss, [1]))
 
             g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
             self.g_losses.append(g_loss)
@@ -430,21 +427,6 @@ class BDCGAN(object):
                 GEN, lr=self.g_learning_rate, loss=g_loss, var_list=g_vars[gi])
             self.opt_adam_dict[GEN].append(g_opt_adam)
             self.opt_user_dict[GEN].append(g_opt_user)
-            print("NOT using huber loss")
-            # Also why???
-            """
-                for enc_params in self.enc_param_list:
-                    encoded_inputs = self.encoder(self.inputs, enc_params)
-                    _, _, d_features_real = self.discriminator(
-                        self.inputs, encoded_inputs, self.K, disc_params)
-                    g_hub_loss = tf.reduce_mean(
-                        huber_loss(d_features_real, d_features_fake))
-                    
-                    g_loss_ = g_disc_loss + g_hub_loss
-                    if not self.ml:
-                        g_loss_ += g_prior_loss + self.noise(gen_params, GEN)
-                    gi_losses.append(tf.reshape(g_loss_, [1]))
-            """         
         print("compiled generator losses", self.g_losses)      
 
         ### build samplers

@@ -79,15 +79,13 @@ def train_dcgan(dataset, args, dcgan, sess):
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
         #np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
 
-        # TODO this is really ugly
         d_feed_dict = {dcgan.inputs: image_batch,
                        dcgan.z: batch_z,
                        dcgan.d_learning_rate: learning_rates["disc"]}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
-        #if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold * 2: 
-        sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
-
+        if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold:
+            sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
                                feed_dict={dcgan.inputs: image_batch,
@@ -181,8 +179,7 @@ def train_dcgan(dataset, args, dcgan, sess):
     np.savez(losses_file, **running_losses)
     print("Saved running losses to", losses_file)
     
-    plot_losses(savename=os.path.join(args.out_dir, "losses_plot.png"), 
-                **running_losses)
+    plot_losses(running_losses, savename=os.path.join(args.out_dir, "losses_plot.png"))
     
     results = evaluate_classification(sess, dcgan, args, dataset)
     with open(os.path.join(args.out_dir, "classification.json")) as fp:
