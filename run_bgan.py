@@ -63,7 +63,10 @@ def train_dcgan(dataset, args, dcgan, sess):
         "enc": args.enc_lr}
     learning_rates = base_learning_rates
     d_update_threshold = args.d_update_threshold
-    d_update_decay_steps = list(map(int, args.d_update_decay_steps.split(",")))
+    if args.d_update_decay_steps == "":
+        d_update_decay_steps = []
+    else:
+        d_update_decay_steps = list(map(int, args.d_update_decay_steps.split(",")))
     for train_iter in range(num_train_iter):
 
         if train_iter == 5000:
@@ -104,10 +107,11 @@ def train_dcgan(dataset, args, dcgan, sess):
         else:
             d_updated = False
         ### compute encoder losses
-        enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
-                               feed_dict={dcgan.inputs: image_batch,
-                                          dcgan.e_learning_rate: learning_rates["enc"]})
-        e_losses = enc_info[len(optimizer_dict["enc"]):]
+        e_feed_dict = {dcgan.inputs: image_batch, dcgan.e_learning_rate:learning_rates["enc"]}
+
+        e_losses = sess.run(dcgan.e_losses, feed_dict=e_feed_dict)
+        if train_iter + 1 > args.e_optimize_iter:
+            sess.run(optimizer_dict["enc"], feed_dict=e_feed_dict)
 
         ### compute generative losses
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
@@ -205,7 +209,7 @@ def train_dcgan(dataset, args, dcgan, sess):
     plot_losses(running_losses, savename=os.path.join(args.out_dir, "losses_plot.png"))
     
     results = evaluate_classification(sess, dcgan, args, dataset)
-    with open(os.path.join(args.out_dir, "classification.json")) as fp:
+    with open(os.path.join(args.out_dir, "classification.json"), "w") as fp:
         json.dump(results, fp)
     print("done")
 
@@ -447,16 +451,20 @@ if __name__ == "__main__":
 
     parser.add_argument('--d_update_threshold',
                         type=float,
-                        default=0.85)
+                        default=1.)
     parser.add_argument('--d_update_decay_steps',
                         type=str,
-                        default="1000")
+                        default="")
     parser.add_argument('--d_update_decay',
                         type=float,
-                        default=0.03)
+                        default=0.)
     parser.add_argument('--d_update_bound',
                         type=float,
-                        default=0.8)
+                        default=1.)
+    parser.add_argument('--e_optimize_iter',
+                        type=int,
+                        default=0)
+
     args = parser.parse_args()
     print(args)
     # set seeds
