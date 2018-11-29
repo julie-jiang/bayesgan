@@ -244,7 +244,7 @@ class BDCGAN(object):
                         wgts_[name] = tf.get_variable(
                             "%s_%04d_%04d" % (name, zi, m),
                             shape, 
-                            initializer=tf.random_normal_initializer(stddev=0.02)) # TODO?
+                            initializer=tf.glorot_uniform_initializer()) 
                     param_list.append(wgts_)
 
             return param_list
@@ -314,7 +314,7 @@ class BDCGAN(object):
         d_acc_reals_ = []
         
         encoded_inputs = self.encoder(self.inputs, enc_params)
-        d_probs, d_logits, _ = self.discriminator(
+        d_probs, d_logits, d_features_real = self.discriminator(
                self.inputs, encoded_inputs, self.K, disc_params)
 
         constant_labels = np.zeros((self.batch_size, self.K))
@@ -323,14 +323,15 @@ class BDCGAN(object):
             tf.nn.softmax_cross_entropy_with_logits(
                 logits=d_logits,
                 labels=tf.constant(constant_labels)))
-        d_acc_real = tf.metrics.accuracy(constant_labels, d_probs)
+        _, d_acc_real = tf.metrics.accuracy(
+            tf.argmax(tf.constant(constant_labels), 1), tf.argmax(d_probs, 1))
         if not self.ml:
             d_loss_real_ = d_loss_real + d_prior_loss + self.noise(disc_params, DISC)
         d_losses_reals_.append(tf.reshape(d_loss_real_, [1]))
         d_acc_reals_.append(d_acc_real)
 
         d_loss_reals = tf.reduce_logsumexp(tf.concat(d_losses_reals_, 0))
-        d_losses_reals.append(d_loss_reals)
+        self.d_losses_reals.append(d_loss_reals)
 
         d_losses_fakes_ = []
         d_acc_fakes_ = []
@@ -346,7 +347,8 @@ class BDCGAN(object):
                     logits=d_logits_,
                     labels=tf.constant(constant_labels)))
             d_loss_fake_ /= self.num_gen
-            d_acc_fake = tf.metrics.accuracy(constant_labels, d_probs_)
+            _, d_acc_fake = tf.metrics.accuracy(
+                tf.argmax(tf.constant(constant_labels), 1), tf.argmax(d_probs_, 1))
             if not self.ml:
                 d_loss_fake_ += d_prior_loss + self.noise(disc_params, DISC)
             d_losses_fakes_.append(tf.reshape(d_loss_fake_, [1]))
@@ -426,6 +428,8 @@ class BDCGAN(object):
             g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                    logits=d_logits_,
                    labels=tf.constant(constant_labels)))
+            
+            #g_disc_loss += 0.25 * tf.reduce_mean(huber_loss(d_features_real, d_features_fake))
             if not self.ml:
                 g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
             gi_losses.append(tf.reshape(g_disc_loss, [1]))
@@ -433,9 +437,11 @@ class BDCGAN(object):
             g_loss = tf.reduce_logsumexp(tf.concat(gi_losses, 0))
             self.g_losses.append(g_loss)
 
-
+            
             g_opt_adam, g_opt_user = self._compile_optimizers(
                 GEN, lr=self.g_learning_rate, loss=g_loss, var_list=g_vars[gi])
+            
+            
             self.opt_adam_dict[GEN].append(g_opt_adam)
             self.opt_user_dict[GEN].append(g_opt_user)
         print("compiled generator losses", self.g_losses)      
@@ -449,15 +455,14 @@ class BDCGAN(object):
                 self.generator(self.z_sampler, gen_params))
         
         self.reconstructers = OrderedDict({})
-        recon_losses = []
+        self.recon_losses = []
         for gi, gen_params in enumerate(self.gen_param_list):
             for ei, enc_params in enumerate(self.enc_param_list):
                 recon = self.generator(
                     self.encoder(self.inputs, enc_params), 
                     gen_params)
                 self.reconstructers[(gi, ei)] = recon
-                recon_losses.append(tf.losses.mean_squared_error(self.inputs, recon))
-        self.recon_loss = tf.reduce_mean(recon_losses)
+                self.recon_losses.append(tf.losses.mean_squared_error(self.inputs, recon))
         
         
         self.encoders = []

@@ -34,14 +34,14 @@ def get_sess():
     return _SESSION
 
 def print_losses(name, losses):
-    print("%s losses = %s" % 
-         (name, ", ".join(["%.2f" % l for l in losses])))
+    print("%s = %s" % 
+         (name, ", ".join(["%.4f" % l for l in losses])))
 
 def train_dcgan(dataset, args, dcgan, sess):
 
     print("Starting sess")
     sess.run(tf.global_variables_initializer())
-
+    sess.run(tf.local_variables_initializer())
     print("Starting training loop")
         
     num_train_iter = args.train_iter
@@ -56,25 +56,35 @@ def train_dcgan(dataset, args, dcgan, sess):
     
     for m in ["g", "e", "d_real", "d_fake", "recon"]:
         running_losses["%s_losses" % m] = np.empty(num_train_iter)
+    running_losses["d_accuracy"] = np.empty(num_train_iter)
     base_learning_rates = {
         "gen": args.gen_lr,
         "disc": args.disc_lr,
-        "discs": args.disc_lr,
         "enc": args.enc_lr}
-    learning_rates = {}
-    #print("USING RAND NORMAL DIST")
-    print("NOT USING UPDATE THRESHOLD")
+    learning_rates = base_learning_rates
+    d_update_threshold = args.d_update_threshold
+    d_update_decay_steps = list(map(int, args.d_update_decay_steps.split(",")))
     for train_iter in range(num_train_iter):
 
         if train_iter == 5000:
             print("Switching to user-specified optimizer")
             optimizer_dict = dcgan.opt_user_dict
+        
         for m, b_lr in base_learning_rates.items():
-            learning_rates[m] = b_lr * np.exp(-lr_decay_rate * \
+            if m == "enc":
+                learning_rates[m] = b_lr
+            else:
+                learning_rates[m] = b_lr * np.exp(-lr_decay_rate * \
                     min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
-
-
+        print("gen lr %f, disc lr %f" % (learning_rates["gen"], learning_rates["disc"]))
+        #print(np.exp(-lr_decay_rate * min(1., (train_iter * args.batch_size) / float(dataset.dataset_size))))
+        if (train_iter + 1) in d_update_decay_steps:
+            d_update_threshold = max(d_update_threshold - args.d_update_decay, 
+                                     args.d_update_bound)
+            print("d update threshold:", d_update_threshold)
+    
         image_batch, _ = dataset.next_batch(args.batch_size, class_id=None)       
+        
         ### compute disc losses
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
         #np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
@@ -84,8 +94,15 @@ def train_dcgan(dataset, args, dcgan, sess):
                        dcgan.d_learning_rate: learning_rates["disc"]}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
-        if np.mean(d_losses_reals) + np.mean(d_losses_fakes) > args.d_update_threshold:
+        
+        d_real_acc = sess.run(dcgan.d_acc_reals, feed_dict=d_feed_dict)
+        d_fake_acc = sess.run(dcgan.d_acc_fakes, feed_dict=d_feed_dict)
+        d_mean_acc = np.mean(np.concatenate((d_real_acc, d_fake_acc)))
+        if d_mean_acc < d_update_threshold:
             sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
+            d_updated = True
+        else:
+            d_updated = False
         ### compute encoder losses
         enc_info = sess.run(optimizer_dict["enc"] + dcgan.e_losses,
                                feed_dict={dcgan.inputs: image_batch,
@@ -94,25 +111,31 @@ def train_dcgan(dataset, args, dcgan, sess):
 
         ### compute generative losses
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
-        gen_info = sess.run(optimizer_dict["gen"] + dcgan.g_losses,
-                               feed_dict={dcgan.z: batch_z,
-                                          dcgan.inputs: image_batch,
-                                          dcgan.g_learning_rate: learning_rates["gen"]})
-        g_losses = gen_info[len(optimizer_dict["gen"]):]
         
-        recon_loss  = sess.run(dcgan.recon_loss, feed_dict={dcgan.inputs: image_batch})
-
+        g_feed_dict = {dcgan.z: batch_z,
+                       dcgan.inputs: image_batch,
+                       dcgan.g_learning_rate: learning_rates["gen"]}
+        g_losses = sess.run(dcgan.g_losses, feed_dict=g_feed_dict)
+        sess.run(optimizer_dict["gen"], feed_dict=g_feed_dict)
+        
+        recon_losses = sess.run(dcgan.recon_losses, feed_dict={dcgan.inputs: image_batch})
+        
         print("Iter %i" % train_iter)
-        print_losses("Disc reals", d_losses_reals)
-        print_losses("Disc fakes", d_losses_fakes)
-        print_losses("Enc", e_losses)
-        print_losses("Gen", g_losses)
-        print("Recon", recon_loss)        
+        print_losses("Disc reals losses", d_losses_reals)
+        print_losses("Disc fakes losses", d_losses_fakes)
+        print_losses("Enc losses", e_losses)
+        print_losses("Gen losses", g_losses)
+        print_losses("Recon losses", recon_losses)        
+        print_losses("Disc acc real", d_real_acc)
+        print_losses("Disc acc fake", d_fake_acc)
+        print("D mean acc", d_mean_acc)
+        print("D updated", d_updated)
         running_losses["g_losses"][train_iter] = np.mean(g_losses)
         running_losses["e_losses"][train_iter] = np.mean(e_losses)
         running_losses["d_real_losses"][train_iter] = np.mean(d_losses_reals)
         running_losses["d_fake_losses"][train_iter] = np.mean(d_losses_fakes)
-        running_losses["recon_losses"][train_iter] = recon_loss
+        running_losses["recon_losses"][train_iter] = np.mean(recon_losses)
+        running_losses["d_accuracy"][train_iter] = d_mean_acc
         if train_iter + 1 == num_train_iter or \
            (train_iter > 0 and train_iter  % args.n_save == 0):
 
@@ -424,8 +447,16 @@ if __name__ == "__main__":
 
     parser.add_argument('--d_update_threshold',
                         type=float,
-                        default=0.2)
-
+                        default=0.85)
+    parser.add_argument('--d_update_decay_steps',
+                        type=str,
+                        default="1000")
+    parser.add_argument('--d_update_decay',
+                        type=float,
+                        default=0.03)
+    parser.add_argument('--d_update_bound',
+                        type=float,
+                        default=0.8)
     args = parser.parse_args()
     print(args)
     # set seeds
