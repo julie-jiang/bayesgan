@@ -32,5 +32,5 @@ stdbuf -o0 ./run_bgan.py \
         --n_save 500 --save_samples --evaluate_latent \
         --batch_size 256 \
         --d_update_threshold 1.0 --d_update_decay_steps 500,1000,2000,3000 --d_update_decay 0.025 \
-        --d_update_bound 0.9 --lr_decay 0.0005  --e_optimize_iter 2000 \
+        --d_update_bound 0.9 --lr_decay 0.0005  --e_optimize_iter 0 \
         --random_seed 1  
