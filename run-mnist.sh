@@ -33,4 +33,5 @@ stdbuf -o0 ./run_bgan.py \
         --batch_size 256 \
         --d_update_threshold 1.0 --d_update_decay_steps 500,1000,2000,3000 --d_update_decay 0.025 \
         --d_update_bound 0.9 --lr_decay 0.0005  --e_optimize_iter 2000 \
+        --mnist_use_special_net \
         --random_seed 1  

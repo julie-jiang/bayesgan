@@ -16,7 +16,7 @@ from tensorflow.contrib import slim
 
 from bgan_util import AttributeDict
 from bgan_util import print_images, MnistDataset, CelebDataset, Cifar10, SVHN, ImageNet
-from bgan import BDCGAN
+from bgan import BDCGAN, BDCGAN_mnist
 from gan_plot import plot_losses, plot_latent_encodings
 
 from sklearn.neighbors import KNeighborsClassifier as KNN
@@ -290,8 +290,13 @@ def b_dcgan(dataset, args):
 
     sess = get_sess()
     tf.set_random_seed(args.random_seed)
+
+    if args.dataset == "mnist" and args.mnist_use_special_net:
+        model = BDCGAN_mnist
+    else:
+        model = BDCGAN
     
-    dcgan = BDCGAN(dataset.x_dim, args.z_dim, 
+    dcgan = model(dataset.x_dim, args.z_dim, 
                    dataset.dataset_size, batch_size=args.batch_size,
                    J=args.J, J_d=args.J_d, J_e=args.J_e, M=args.M, 
                    num_layers=args.num_layers,
@@ -464,6 +469,8 @@ if __name__ == "__main__":
     parser.add_argument('--e_optimize_iter',
                         type=int,
                         default=0)
+    parser.add_argument('--mnist_use_special_net',
+                        action="store_true")
 
     args = parser.parse_args()
     print(args)
