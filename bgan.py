@@ -27,7 +27,8 @@ class BDCGAN(object):
     def __init__(self, x_dim, z_dim, dataset_size, batch_size=64, gf_dim=64, df_dim=64, 
                  prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4,
                  alpha=0.01, optimizer='adam', wasserstein=False, 
-                 ml=False, J_d=1, J_e=1):
+                 ml=False, J_d=1, J_e=1, d_learning_rate=0.001, 
+                 g_learning_rate=0.001, e_learning_rate=0.001):
         assert len(x_dim) == 3, "invalid image dims"
         c_dim = x_dim[2]
         self.is_grayscale = (c_dim == 1)
@@ -43,6 +44,10 @@ class BDCGAN(object):
         self.df_dim = df_dim
         self.ef_dim = df_dim # TODO
         self.c_dim = c_dim
+        
+        self.g_learning_rate = g_learning_rate
+        self.d_learning_rate = d_learning_rate
+        self.e_learning_rate = e_learning_rate
         
         # Bayes
         self.prior_std = prior_std
@@ -78,71 +83,25 @@ class BDCGAN(object):
         self.num_gfs = self.num_dfs[::-1]
         self.num_efs = self.num_dfs
         
-        self.construct_from_hypers(
-            gen_strides=self.gen_strides, 
-            disc_strides=self.disc_strides,
-            enc_strides=self.enc_strides,
-            num_gfs=self.num_gfs, 
-            num_dfs=self.num_dfs,
-            num_efs=self.num_efs)
+        self.construct_disc_from_hypers(disc_strides=self.disc_strides, 
+                                        num_dfs=self.num_dfs)
+        self.construct_gen_from_hypers(gen_strides=self.gen_strides, 
+                                       num_gfs=self.num_gfs)
+        self.construct_enc_from_hypers(enc_strides=self.enc_strides,
+                                       num_efs=self.num_efs)
         
         self.build_bgan_graph()
-    
-    def construct_from_hypers(self, gen_kernel_size=5, gen_strides=[2, 2, 2, 2],
-                              disc_kernel_size=5, disc_strides=[2, 2, 2, 2],
-                              enc_kernel_size=5, enc_strides=[2, 2, 2, 2],
-                              num_dfs=None, num_gfs=None, num_efs=None):
 
-        
+    def construct_disc_from_hypers(self, disc_kernel_size=5, 
+                                   disc_strides=[2, 2, 2, 2], num_dfs=None):
         self.d_batch_norm = AttributeDict(
             [("d_bn%i" % dbn_i, batch_norm(name='d_bn%i' % dbn_i)) \
              for dbn_i in range(len(disc_strides))])
-        self.sup_d_batch_norm = AttributeDict(
-            [("sd_bn%i" % dbn_i, batch_norm(name='sup_d_bn%i' % dbn_i)) \
-             for dbn_i in range(5)])
-        self.g_batch_norm = AttributeDict(
-            [("g_bn%i" % gbn_i, batch_norm(name='g_bn%i' % gbn_i)) \
-             for gbn_i in range(len(gen_strides))])
-        self.e_batch_norm = AttributeDict(
-            [("e_bn%i" % ebn_i, batch_norm(name="e_bn%i" % ebn_i)) \
-             for ebn_i in range(len(enc_strides))])
-    
         if num_dfs is None:
             num_dfs = [self.df_dim, self.df_dim * 2, self.df_dim * 4, self.df_dim * 8]
-            
-        if num_gfs is None:
-            num_gfs = [self.gf_dim * 8, self.gf_dim * 4, self.gf_dim * 2, self.gf_dim]
-        
-        if num_efs is None:
-            num_efs = [self.ef_dim * (2 ** i) for i in range(4)]
-        
-        assert len(gen_strides) == len(num_gfs), "invalid hypers!"
+
+
         assert len(disc_strides) == len(num_dfs), "invalid hypers!"
-        assert len(enc_strides) == len(num_efs), "invalid hypers!"
-
-        s_h, s_w = self.x_dim[0], self.x_dim[1]
-        ks = gen_kernel_size
-        self.gen_output_dims = OrderedDict()
-        self.gen_weight_dims = OrderedDict()
-        num_gfs = num_gfs + [self.c_dim]
-        self.gen_kernel_sizes = [ks]
-        for layer in range(len(gen_strides))[::-1]:
-            self.gen_output_dims["g_h%i_out" % (layer + 1)] = (s_h, s_w)
-            assert gen_strides[layer] <= 2, "invalid stride"
-            assert ks % 2 == 1, "invalid kernel size"
-            self.gen_weight_dims["g_h%i_W" % (layer + 1)] = \
-                (ks, ks, num_gfs[layer + 1], num_gfs[layer])
-            self.gen_weight_dims["g_h%i_b" % (layer + 1)] = (num_gfs[layer + 1],)
-            s_h = conv_out_size(s_h, gen_strides[layer])
-            s_w = conv_out_size(s_w, gen_strides[layer])
-            ks = kernel_sizer(ks, gen_strides[layer])
-            self.gen_kernel_sizes.append(ks)
-
-
-        self.gen_weight_dims.update(OrderedDict(
-            [("g_h0_lin_W", (self.z_dim, num_gfs[0] * s_h * s_w)),
-             ("g_h0_lin_b", (num_gfs[0] * s_h * s_w,))]))
-        self.gen_output_dims["g_h0_out"] = (s_h, s_w)
 
         self.disc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
@@ -170,6 +129,65 @@ class BDCGAN(object):
              ("d_h_lin_b", (num_dfs[-1],)),
              ("d_h_out_lin_W", (num_dfs[-1], self.K)),
              ("d_h_out_lin_b", (self.K,))]))
+        for k, v in self.disc_weight_dims.items():
+            print("%s: %s" % (k, v))
+        print("*****")
+
+    def construct_gen_from_hypers(self, gen_kernel_size=5, 
+                                  gen_strides=[2, 2, 2, 2], num_gfs=None):
+
+        self.g_batch_norm = AttributeDict(
+            [("g_bn%i" % gbn_i, batch_norm(name='g_bn%i' % gbn_i)) \
+             for gbn_i in range(len(gen_strides))])
+        if num_gfs is None:
+            num_gfs = [self.gf_dim * 8, self.gf_dim * 4, self.gf_dim * 2, self.gf_dim]
+
+        assert len(gen_strides) == len(num_gfs), "invalid hypers!"
+
+        s_h, s_w = self.x_dim[0], self.x_dim[1]
+        ks = gen_kernel_size
+        self.gen_output_dims = OrderedDict()
+        self.gen_weight_dims = OrderedDict()
+        num_gfs = num_gfs + [self.c_dim]
+        self.gen_kernel_sizes = [ks]
+        for layer in range(len(gen_strides))[::-1]:
+            self.gen_output_dims["g_h%i_out" % (layer + 1)] = (s_h, s_w)
+            assert gen_strides[layer] <= 2, "invalid stride"
+            assert ks % 2 == 1, "invalid kernel size"
+            self.gen_weight_dims["g_h%i_W" % (layer + 1)] = \
+                (ks, ks, num_gfs[layer + 1], num_gfs[layer])
+            self.gen_weight_dims["g_h%i_b" % (layer + 1)] = (num_gfs[layer + 1],)
+            s_h = conv_out_size(s_h, gen_strides[layer])
+            s_w = conv_out_size(s_w, gen_strides[layer])
+            ks = kernel_sizer(ks, gen_strides[layer])
+            self.gen_kernel_sizes.append(ks)
+
+
+        self.gen_weight_dims.update(OrderedDict(
+            [("g_h0_lin_W", (self.z_dim, num_gfs[0] * s_h * s_w)),
+             ("g_h0_lin_b", (num_gfs[0] * s_h * s_w,))]))
+        self.gen_output_dims["g_h0_out"] = (s_h, s_w)
+
+        for k, v in self.gen_output_dims.items():
+            print("%s: %s" % (k, v))
+        print('****')
+        for k, v in self.gen_weight_dims.items():
+            print("%s: %s" % (k, v))
+        print('****')
+
+    def construct_enc_from_hypers(self, enc_kernel_size=5, 
+                              enc_strides=[2, 2, 2, 2], num_efs=None):
+        
+        self.e_batch_norm = AttributeDict(
+            [("e_bn%i" % ebn_i, batch_norm(name="e_bn%i" % ebn_i)) \
+             for ebn_i in range(len(enc_strides))])
+    
+        if num_efs is None:
+            num_efs = [self.ef_dim * (2 ** i) for i in range(4)]
+        
+        
+        
+        assert len(enc_strides) == len(num_efs), "invalid hypers!"
 
         self.enc_weight_dims = OrderedDict()
         s_h, s_w = self.x_dim[0], self.x_dim[1]
@@ -193,17 +211,9 @@ class BDCGAN(object):
              ("e_h_out_lin_W", (num_efs[-1], self.z_dim)),
              ("e_h_out_lin_b", (self.z_dim,))]))
         
-        for k, v in self.gen_output_dims.items():
-            print("%s: %s" % (k, v))
-        print('****')
-        for k, v in self.gen_weight_dims.items():
-            print("%s: %s" % (k, v))
-        print('****')
-        for k, v in self.disc_weight_dims.items():
-            print("%s: %s" % (k, v))
-        print("*****")
         for k, v in self.enc_weight_dims.items():
             print("%s: %s" % (k, v))
+        print('****')
         
     def _get_optimizer(self, lr, use_adam=True):
         if self.optimizer == 'adam' or use_adam:
@@ -289,13 +299,6 @@ class BDCGAN(object):
         d_vars = self._get_vars(DISC)
         e_vars = self._get_vars(ENC)
         g_vars = self._get_vars(GEN)
-
-        # learning rates
-        self.d_learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
-
-
         ### buil disc losses and optimizers
         self.opt_user_dict = {}
         self.opt_adam_dict = {}
@@ -479,8 +482,6 @@ class BDCGAN(object):
                     self.K,
                     disc_params)
                 self.discriminators.append(d_logits)
-        
-                    
 
     def discriminator(self, image, encoded_image, K, disc_params, train=True):
 
@@ -580,7 +581,7 @@ class BDCGAN(object):
                 matrix=enc_params["e_h_out_lin_W"],
                 bias=enc_params["e_h_out_lin_b"])
             
-            return tf.nn.tanh(h_out)
+            return h_out #tf.nn.tanh(h_out)
                         
 
     def generator(self, z, gen_params, train=True):
@@ -642,3 +643,72 @@ class BDCGAN(object):
                 noise_loss += tf.reduce_sum(var * noise_.sample())
         noise_loss /= self.dataset_size
         return noise_loss
+
+
+
+class BDCGAN_mnist(BDCGAN):
+    def __init__(self, *args, **kwargs):
+        self.x_disc_layers = 4
+        self.z_disc_layers = 4
+        super().__init__(*args, **kwargs)
+
+    def construct_disc_from_hypers(self, **kwargs):
+        self.disc_weight_dims = OrderedDict()
+
+        x_dim = self.x_dim[0] * self.x_dim[1]
+        x_disc_sizes = [x_dim, x_dim // 2, x_dim // 4, x_dim // 8, self.K]
+       
+
+        # x_dscrim
+        for layer in range(self.x_disc_layers):
+            self.disc_weight_dims["d_h%d_x_lin_W" % layer] = \
+                (x_disc_sizes[layer], x_disc_sizes[layer + 1])
+            self.disc_weight_dims["d_h%d_x_lin_b" % layer] = \
+                (x_disc_sizes[layer + 1],)
+
+        z_disc_sizes = [self.z_dim, self.z_dim * 2, self.z_dim * 4, self.z_dim, self.K]
+
+        for layer in range(self.z_disc_layers):
+            self.disc_weight_dims["d_h%d_z_lin_W" % layer] = \
+                (z_disc_sizes[layer], z_disc_sizes[layer + 1])
+            self.disc_weight_dims["d_h%d_z_lin_b" % layer] = \
+                (z_disc_sizes[layer + 1],)
+        
+
+        self.disc_weight_dims["d_h_out_lin_W"] = (self.K, self.K)
+        self.disc_weight_dims["d_h_out_lin_b"] = (self.K,)
+
+        for k, v in self.disc_weight_dims.items():
+            print("%s: %s" % (k, v))
+        print("*****")
+
+    def discriminator(self, image, encoded_image, K, disc_params, train=True):
+
+        with tf.variable_scope(DISC, reuse=tf.AUTO_REUSE) as scope:
+
+            h = tf.layers.flatten(image)
+
+            for layer in range(self.x_disc_layers):
+                h = lrelu(linear(h, 
+                                 self.disc_weight_dims["d_h%d_x_lin_b" % layer],
+                                 "d_h%d_x_lin" % layer,
+                                 matrix=disc_params["d_h%d_x_lin_W" % layer],
+                                 bias=disc_params["d_h%d_x_lin_b" % layer]))
+
+            h_enc = encoded_image
+
+            for layer in range(self.z_disc_layers):
+                h_enc = lrelu(linear(h_enc, 
+                                 self.disc_weight_dims["d_h%d_z_lin_b" % layer],
+                                 "d_h%d_z_lin" % layer,
+                                 matrix=disc_params["d_h%d_z_lin_W" % layer],
+                                 bias=disc_params["d_h%d_z_lin_b" % layer]))
+            
+            h_out = linear(
+                h + h_enc, 
+                K, 
+                'd_h_out_lin',
+                matrix=disc_params["d_h_out_lin_W"], 
+                bias=disc_params["d_h_out_lin_b"])
+            
+            return tf.nn.softmax(h_out), h_out, h

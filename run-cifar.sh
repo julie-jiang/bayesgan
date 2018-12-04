@@ -10,7 +10,7 @@
 #
 # Estimated running time. 
 # The job will be killed when it runs 15 min longer than this time.
-#SBATCH --time=0-3:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --mem=100gb
 #
 ## Resources 
@@ -26,16 +26,16 @@ stdbuf -o0 ./run_bgan.py \
         --dataset cifar \
         --out_dir exp_results \
         --gf_dim 64 --df_dim 64 \
-        --disc_lr 0.001 --enc_lr 0.001 --gen_lr 0.001 \
-        --num_gen 4 --num_enc 1 --num_disc 1 --num_mcmc 1 \
+        --disc_lr 0.001 --enc_lr 0.0001 --gen_lr 0.001 \
+        --num_gen 5 --num_enc 1 --num_disc 1 --num_mcmc 1 \
         --train_iter 20000 \
         --n_save 1000 --save_samples --evaluate_latent \
-        --batch_size 256 --lr_decay 0.0005 
-        #--prior_std 10 
+        --batch_size 256 --lr_decay 0.0005 --e_optimize_iter 0 \
+        --prior_std 10 
 #--ml 
 #       --optimizer sgd 
 #        --load_from "exp_results/mnistunsup/bgan_mnist_1542495198/model.ckpt-5000"
 #        --data_path mnistdir --out_dir exp_results/mnistunsup \
 #        --gf_dim 64 --df_dim 64 --num_gen 2 --num_disc 1 --num_mcmc 2 \
 #        --train_iter 5000 --n_save 1000 --save_samples --save_weights \
-#        --prior_std 10
+        --prior_std 10

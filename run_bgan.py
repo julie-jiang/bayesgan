@@ -16,7 +16,7 @@ from tensorflow.contrib import slim
 
 from bgan_util import AttributeDict
 from bgan_util import print_images, MnistDataset, CelebDataset, Cifar10, SVHN, ImageNet
-from bgan import BDCGAN
+from bgan import BDCGAN, BDCGAN_mnist
 from gan_plot import plot_losses, plot_latent_encodings
 
 from sklearn.neighbors import KNeighborsClassifier as KNN
@@ -57,11 +57,6 @@ def train_dcgan(dataset, args, dcgan, sess):
     for m in ["g", "e", "d_real", "d_fake", "recon"]:
         running_losses["%s_losses" % m] = np.empty(num_train_iter)
     running_losses["d_accuracy"] = np.empty(num_train_iter)
-    base_learning_rates = {
-        "gen": args.gen_lr,
-        "disc": args.disc_lr,
-        "enc": args.enc_lr}
-    learning_rates = base_learning_rates
     d_update_threshold = args.d_update_threshold
     if args.d_update_decay_steps == "":
         d_update_decay_steps = []
@@ -73,14 +68,6 @@ def train_dcgan(dataset, args, dcgan, sess):
             print("Switching to user-specified optimizer")
             optimizer_dict = dcgan.opt_user_dict
         
-        for m, b_lr in base_learning_rates.items():
-            if m == "enc":
-                learning_rates[m] = b_lr
-            else:
-                learning_rates[m] = b_lr * np.exp(-lr_decay_rate * \
-                    min(1.0, (train_iter * args.batch_size) / float(dataset.dataset_size)))
-        print("gen lr %f, disc lr %f" % (learning_rates["gen"], learning_rates["disc"]))
-        #print(np.exp(-lr_decay_rate * min(1., (train_iter * args.batch_size) / float(dataset.dataset_size))))
         if (train_iter + 1) in d_update_decay_steps:
             d_update_threshold = max(d_update_threshold - args.d_update_decay, 
                                      args.d_update_bound)
@@ -93,8 +80,7 @@ def train_dcgan(dataset, args, dcgan, sess):
         #np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
 
         d_feed_dict = {dcgan.inputs: image_batch,
-                       dcgan.z: batch_z,
-                       dcgan.d_learning_rate: learning_rates["disc"]}
+                       dcgan.z: batch_z}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
         
@@ -107,7 +93,7 @@ def train_dcgan(dataset, args, dcgan, sess):
         else:
             d_updated = False
         ### compute encoder losses
-        e_feed_dict = {dcgan.inputs: image_batch, dcgan.e_learning_rate:learning_rates["enc"]}
+        e_feed_dict = {dcgan.inputs: image_batch}
 
         e_losses = sess.run(dcgan.e_losses, feed_dict=e_feed_dict)
         if train_iter + 1 > args.e_optimize_iter:
@@ -117,8 +103,7 @@ def train_dcgan(dataset, args, dcgan, sess):
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
         
         g_feed_dict = {dcgan.z: batch_z,
-                       dcgan.inputs: image_batch,
-                       dcgan.g_learning_rate: learning_rates["gen"]}
+                       dcgan.inputs: image_batch}
         g_losses = sess.run(dcgan.g_losses, feed_dict=g_feed_dict)
         sess.run(optimizer_dict["gen"], feed_dict=g_feed_dict)
         
@@ -190,7 +175,7 @@ def train_dcgan(dataset, args, dcgan, sess):
             if args.evaluate_latent: 
                 all_latent_encodings = evaluate_latent(sess, dcgan, args, dataset)
                 for ei, latent_encodings in enumerate(all_latent_encodings):
-                    for r in range(2):
+                    for r in range(1):
                         filename = "latent_encodings_e%d_r%d_%d.png" \
                                    % (ei, r, train_iter)
                         plot_latent_encodings(
@@ -290,13 +275,21 @@ def b_dcgan(dataset, args):
 
     sess = get_sess()
     tf.set_random_seed(args.random_seed)
+
+    if args.dataset == "mnist" and args.mnist_use_special_net:
+        model = BDCGAN_mnist
+    else:
+        model = BDCGAN
     
-    dcgan = BDCGAN(dataset.x_dim, args.z_dim, 
+    dcgan = model(dataset.x_dim, args.z_dim, 
                    dataset.dataset_size, batch_size=args.batch_size,
                    J=args.J, J_d=args.J_d, J_e=args.J_e, M=args.M, 
                    num_layers=args.num_layers,
                    optimizer=args.optimizer, gf_dim=args.gf_dim, 
                    df_dim=args.df_dim, prior_std=args.prior_std,
+                   d_learning_rate=args.disc_lr,
+                   g_learning_rate=args.gen_lr,
+                   e_learning_rate=args.enc_lr,
                    ml=(args.ml and args.J_e and args.J==1 and args.M==1 and args.J_d==1))
     
     if args.load_from is not None:
@@ -464,6 +457,8 @@ if __name__ == "__main__":
     parser.add_argument('--e_optimize_iter',
                         type=int,
                         default=0)
+    parser.add_argument('--mnist_use_special_net',
+                        action="store_true")
 
     args = parser.parse_args()
     print(args)
