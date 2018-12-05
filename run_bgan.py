@@ -62,8 +62,21 @@ def train_dcgan(dataset, args, dcgan, sess):
         d_update_decay_steps = []
     else:
         d_update_decay_steps = list(map(int, args.d_update_decay_steps.split(",")))
+    base_lrs = {}
+    base_lrs["g"] = args.gen_lr
+    base_lrs["e"] = args.enc_lr
+    base_lrs["d"] = args.disc_lr
+    lrs = {}
+    for k, v in base_lrs.items():
+        lrs[k] = v
+    d_lr = d_base_lr = args.disc_lr
     for train_iter in range(num_train_iter):
-
+        for k, lr in base_lrs.items():
+            if k != "d":
+                continue
+            lrs[k] = lr *  np.exp(
+                -args.lr_decay * min(1.0, train_iter * args.batch_size / dataset.dataset_size))
+        print('lrs', ', '.join("%s %.7f" % (k, lr) for k, lr in lrs.items()))
         if train_iter == 5000:
             print("Switching to user-specified optimizer")
             optimizer_dict = dcgan.opt_user_dict
@@ -80,20 +93,21 @@ def train_dcgan(dataset, args, dcgan, sess):
         #np.random.normal(0, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
 
         d_feed_dict = {dcgan.inputs: image_batch,
-                       dcgan.z: batch_z}
+                       dcgan.z: batch_z,
+                       dcgan.d_learning_rate: lrs["d"]}
         d_losses_reals, d_losses_fakes = sess.run(
             [dcgan.d_losses_reals, dcgan.d_losses_fakes], feed_dict=d_feed_dict)
         
         d_real_acc = sess.run(dcgan.d_acc_reals, feed_dict=d_feed_dict)
         d_fake_acc = sess.run(dcgan.d_acc_fakes, feed_dict=d_feed_dict)
         d_mean_acc = np.mean(np.concatenate((d_real_acc, d_fake_acc)))
-        if d_mean_acc < d_update_threshold:
+        if (args.disc_skip_update and train_iter % 2) == 0 and d_mean_acc < d_update_threshold:
             sess.run(optimizer_dict["disc"], feed_dict=d_feed_dict)             
             d_updated = True
         else:
             d_updated = False
         ### compute encoder losses
-        e_feed_dict = {dcgan.inputs: image_batch}
+        e_feed_dict = {dcgan.inputs: image_batch, dcgan.e_learning_rate: lrs["e"]}
 
         e_losses = sess.run(dcgan.e_losses, feed_dict=e_feed_dict)
         if train_iter + 1 > args.e_optimize_iter:
@@ -103,7 +117,8 @@ def train_dcgan(dataset, args, dcgan, sess):
         batch_z = np.random.uniform(-1, 1, [args.batch_size, args.z_dim, dcgan.num_gen])
         
         g_feed_dict = {dcgan.z: batch_z,
-                       dcgan.inputs: image_batch}
+                       dcgan.inputs: image_batch, 
+                       dcgan.g_learning_rate: lrs["g"]}
         g_losses = sess.run(dcgan.g_losses, feed_dict=g_feed_dict)
         sess.run(optimizer_dict["gen"], feed_dict=g_feed_dict)
         
@@ -160,18 +175,9 @@ def train_dcgan(dataset, args, dcgan, sess):
                         train_iter, 
                         directory=args.out_dir)
                 
-                for (gi, ei), recon in dcgan.reconstructers.items():
-                    recon_imgs = sess.run(recon, 
-                                          feed_dict={dcgan.inputs: image_batch})
-                    filename = "B_DCGAN_RECON_g%i_e%i" % (gi, ei)
-                    print_images(
-                        recon_imgs,
-                        filename,
-                        train_iter,
-                        directory=args.out_dir)    
-                print_images(
-                    image_batch, "RAW", train_iter, directory=args.out_dir)
-                
+                #print_images(
+                #    image_batch, "RAW", train_iter, directory=args.out_dir)
+                evaluate_recon(sess, dcgan, args, dataset, train_iter) 
             if args.evaluate_latent: 
                 all_latent_encodings = evaluate_latent(sess, dcgan, args, dataset)
                 for ei, latent_encodings in enumerate(all_latent_encodings):
@@ -197,7 +203,15 @@ def train_dcgan(dataset, args, dcgan, sess):
     with open(os.path.join(args.out_dir, "classification.json"), "w") as fp:
         json.dump(results, fp)
     print("done")
-
+def evaluate_recon(sess, dcgan, args, dataset, train_iter):
+    for (gi, ei), recon in dcgan.reconstructers.items():
+        for c in range(dataset.num_classes):
+            inputs_c, _ = dataset.next_batch(args.batch_size, class_id=c)
+            recons_c = sess.run(recon, feed_dict={dcgan.inputs: inputs_c})
+            filename = "B_DCGAN_RECON_g%i_e%i_c%i" % (gi, ei, c)
+            print_images(recons_c, filename, train_iter, directory=args.out_dir)
+            # print_images(inputs_c, "RAW_c%i" % c, train_iter, directory=args.out_dir)
+        
 def evaluate_classification(sess, dcgan, args, dataset):
     def truncate_size(data):
         return data[:len(data) - len(data) % args.batch_size]
@@ -287,9 +301,6 @@ def b_dcgan(dataset, args):
                    num_layers=args.num_layers,
                    optimizer=args.optimizer, gf_dim=args.gf_dim, 
                    df_dim=args.df_dim, prior_std=args.prior_std,
-                   d_learning_rate=args.disc_lr,
-                   g_learning_rate=args.gen_lr,
-                   e_learning_rate=args.enc_lr,
                    ml=(args.ml and args.J_e and args.J==1 and args.M==1 and args.J_d==1))
     
     if args.load_from is not None:
@@ -459,6 +470,7 @@ if __name__ == "__main__":
                         default=0)
     parser.add_argument('--mnist_use_special_net',
                         action="store_true")
+    parser.add_argument('--disc_skip_update', action="store_true")
 
     args = parser.parse_args()
     print(args)

@@ -27,8 +27,7 @@ class BDCGAN(object):
     def __init__(self, x_dim, z_dim, dataset_size, batch_size=64, gf_dim=64, df_dim=64, 
                  prior_std=1.0, J=1, M=1, eta=2e-4, num_layers=4,
                  alpha=0.01, optimizer='adam', wasserstein=False, 
-                 ml=False, J_d=1, J_e=1, d_learning_rate=0.001, 
-                 g_learning_rate=0.001, e_learning_rate=0.001):
+                 ml=False, J_d=1, J_e=1):
         assert len(x_dim) == 3, "invalid image dims"
         c_dim = x_dim[2]
         self.is_grayscale = (c_dim == 1)
@@ -45,9 +44,6 @@ class BDCGAN(object):
         self.ef_dim = df_dim # TODO
         self.c_dim = c_dim
         
-        self.g_learning_rate = g_learning_rate
-        self.d_learning_rate = d_learning_rate
-        self.e_learning_rate = e_learning_rate
         
         # Bayes
         self.prior_std = prior_std
@@ -288,7 +284,9 @@ class BDCGAN(object):
             tf.float32, [self.batch_size, self.z_dim, self.num_gen], name='z')
         self.z_sampler = tf.placeholder(
             tf.float32, [self.batch_size, self.z_dim], name='z_sampler')
-        
+        self.d_learning_rate = tf.placeholder(tf.float32, shape=[]) 
+        self.e_learning_rate = tf.placeholder(tf.float32, shape=[])
+        self.g_learning_rate = tf.placeholder(tf.float32, shape=[])
         # initialize  weights
         self.gen_param_list = self.initialize_wgts(GEN)
         self.disc_param_list = self.initialize_wgts(DISC)
@@ -423,15 +421,16 @@ class BDCGAN(object):
             gi_losses = []
             g_prior_loss = self.prior(gen_params, GEN)
             z = self.z[:, :, gi % self.num_gen]
+            gen_x = self.generator(z, gen_params)
             d_probs_, d_logits_, d_features_fake = self.discriminator(
-                self.generator(z, gen_params), z, self.K, disc_params)
+               gen_x, z, self.K, disc_params)
             # class label indicating that this fake is real
             constant_labels = np.zeros((self.batch_size, self.K))
             constant_labels[:, REAL_LABELS] = 1.0
             g_disc_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                    logits=d_logits_,
                    labels=tf.constant(constant_labels)))
-            
+
             #g_disc_loss += 0.25 * tf.reduce_mean(huber_loss(d_features_real, d_features_fake))
             if not self.ml:
                 g_disc_loss += g_prior_loss + self.noise(gen_params, GEN)
@@ -581,7 +580,7 @@ class BDCGAN(object):
                 matrix=enc_params["e_h_out_lin_W"],
                 bias=enc_params["e_h_out_lin_b"])
             
-            return h_out #tf.nn.tanh(h_out)
+            return tf.nn.tanh(h_out)
                         
 
     def generator(self, z, gen_params, train=True):
