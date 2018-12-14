@@ -1,10 +1,11 @@
-try:
-    import matplotlib.pyplot as plt
-    plt.switch_backend("agg")
-except ImportError:
-    import matplotlib as mpl
-    mpl.use('TkAgg')
-    import matplotlib.pyplot as plt
+# try:
+#     import matplotlib.pyplot as plt
+#     plt.switch_backend("agg")
+# except ImportError:
+#     import matplotlib as mpl
+#     mpl.use('TkAgg')
+#     import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 import sys
 import numpy as np 
@@ -66,3 +67,30 @@ if __name__ == "__main__":
         X = np.load(f)
         plot_latent_encodings(X)
 
+    daniels_latent_encoding_thing = True
+    if daniels_latent_encoding_thing:
+        saved_stuff = np.load("latent_encoding_examples.npz")
+        labels = saved_stuff['labels']
+        latent = saved_stuff['latent_encodings']
+        print(labels.shape)
+        print(latent.shape)
+        plt.figure()
+        plt.title("Latent Encodings")
+        plt.xlabel("L1")
+        plt.ylabel("L2")
+        latent_embeddings = TSNE().fit_transform(latent)
+        for i in np.unique(labels):
+            label_embeddings = latent_embeddings[np.where(labels==i)]
+            plt.scatter(label_embeddings[:,0], label_embeddings[:,1], label=i)
+
+        plt.legend()
+        plt.show()
+
+
+
+        # print(latent_embeddings.shape)
+
+
+        # for i,label_inputs in enumerate(latent_encodings):
+        #     label_embeddings = TSNE().fit_transform(label_inputs)
+        
